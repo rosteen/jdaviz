@@ -410,7 +410,7 @@ a:active {
   border-color: hsla(0,0%,100%,.35) !important;
 }
 
-.no-hint .v-text-field__details {
+.no-hint .v-text-field__details, .no-hint .v-messages {
   display: none !important;
 }
 
