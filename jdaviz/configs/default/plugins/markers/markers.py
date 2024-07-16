@@ -211,23 +211,56 @@ class Markers(PluginTemplateMixin, ViewerSelectMixin, TableMixin):
                 viewer.remove_event_callback(callback)
 
     def _on_viewer_key_event(self, viewer, data):
-        if data['event'] == 'keydown' and data['key'] == 'm':
+        if data['event'] == 'keydown' and data['key'] in ('d', 'm'):
             row_info = self.coords_info.as_dict()
 
             if 'viewer' in self.table.headers_avail:
                 row_info['viewer'] = viewer.reference if viewer.reference is not None else viewer.reference_id  # noqa
 
-            for k in self.table.headers_avail:
-                row_info.setdefault(k, self._default_table_values.get(k, ''))
+            if data['key'] == 'm':
 
-            try:
-                self.table.add_item({k: v for k, v in row_info.items()
-                                     if k in self.table.headers_avail})
-            except ValueError as err:  # pragma: no cover
-                raise ValueError(f'failed to add {row_info} to table: {repr(err)}')
+                for k in self.table.headers_avail:
+                    row_info.setdefault(k, self._default_table_values.get(k, ''))
 
-            x, y = row_info['axes_x'], row_info['axes_y']
-            self._get_mark(viewer).append_xy(getattr(x, 'value', x), getattr(y, 'value', y))
+                try:
+                    self.table.add_item({k: v for k, v in row_info.items()
+                                        if k in self.table.headers_avail})
+                except ValueError as err:
+                    raise ValueError(f'failed to add {row_info} to table: {repr(err)}')
+
+                x, y = row_info['axes_x'], row_info['axes_y']
+                self._get_mark(viewer).append_xy(getattr(x, 'value', x), getattr(y, 'value', y))
+
+            elif data['key'] == 'd':
+                if row_info.get('viewer') == 'spectrum-viewer':
+                    compare_fields == ['spectral_axis']
+                else:
+                    compare_fields = ['pixel_x', 'pixel_y']
+                    if self.config == "imviz":
+                        if self.app._link_type == "wcs":
+                            compare_fields = ['world_ra', 'world_dec']
+
+                distances = []
+                max_distance = None
+                for field in compare_fields:
+                    viewer_markers = self.table._qtable[self.table._qtable['viewer'] == row_info['viewer']] # noqa
+                    if len(viewer_markers) == 0:
+                        return
+                    field_range = viewer_markers[field].max() - viewer_markers[field].min()
+                    if max_distance is None or field_range / 20 < max_distance:
+                        max_distance = field_range / 20
+                    field_distances = self.table._qtable[field].value - row_info[field]
+                    distances.append(field_distances)
+
+                if len(distances) == 2:
+                    distances = np.sqrt(np.add(np.square(distances[0]), np.square(distances[1]**2)))
+                else:
+                    distances = np.abs(distances)
+
+                closest_ind = np.argmin(distances)
+                del self.table.items[closest_ind]
+                self.table._qtable.remove_row(closest_ind)
+                self.table.send_state('items')
 
             self.hub.broadcast(MarkersPluginUpdate(table_length=len(self.table), sender=self))
 
