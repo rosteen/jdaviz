@@ -304,16 +304,17 @@ def split_spectrum_with_2D_flux_array(data: Spectrum1D) -> SpectrumList:
 
     """
     new_data = SpectrumList()
+    meta = None
+    if data.meta is not None:
+        meta = data.meta
     for i in range(data.flux.shape[0]):
         unc = None
         mask = None
-        meta = None
         if data.uncertainty is not None:
             unc = data.uncertainty[i, :]
         if data.mask is not None:
             mask = data.mask[i, :]
-        if data.meta is not None:
-            meta = data.meta
+
         new_data.append(
             Spectrum1D(
                 spectral_axis=data.spectral_axis,
