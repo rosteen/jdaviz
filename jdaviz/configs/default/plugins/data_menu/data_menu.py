@@ -167,6 +167,13 @@ class DataMenu(TemplateMixin, LayerSelectMixin, DatasetSelectMixin):
     def existing_subset_labels(self):
         return [sg.label for sg in self.app.data_collection.subset_groups]
 
+    @observe('layer_items')
+    def _update_data_not_in_viewer(self, msg):
+        print("Hit the layer_items observe")
+        # changing the layers in the viewer needs to trigger an update to dataset_items
+        # through the set filters
+        self.dataset._on_data_changed()
+
     def _set_viewer_id(self):
         # viewer_ids are not populated on the viewer at init, so we'll keep checking and set
         # these the first time that they are available

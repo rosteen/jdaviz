@@ -1680,6 +1680,7 @@ class LayerSelect(SelectPluginComponent):
         for current_viewer in viewer:
             for layer in self._get_viewer(current_viewer).state.layers:
                 if layer.layer.label == new_subset_label and is_not_wcs_only(layer.layer):
+                    print("Matched the subset")
                     layer.add_callback('color', self._update_layer_items)
                     layer.add_callback('visible', self._update_layer_items)
                     # TODO: Add ability to add new item to self.items instead of recompiling
@@ -1732,6 +1733,7 @@ class LayerSelect(SelectPluginComponent):
             if self.app.state.layer_icons.get(layer.layer.label) or
             self.only_wcs_layers
         ]
+        print(layer_labels)
         unique_layer_labels = list(set(layer_labels))
         layer_items = [self._layer_to_dict(layer_label) for layer_label in unique_layer_labels]
 
@@ -1749,6 +1751,8 @@ class LayerSelect(SelectPluginComponent):
             layer_items.sort(key=_sort_by_icon)
 
         self.items = manual_items + layer_items
+        print(f"Items: {self.items}")
+        #self.send_state("items")
 
         self._apply_default_selection()
 
