@@ -79,6 +79,7 @@
               style="height: 100%;"
               :has-headers="state.settings.visible.tab_headers"
               @state="onLayoutChange"
+              ref="goldenLayout"
             >
               <gl-row :closable="false">
                 <g-viewer-tab
@@ -179,6 +180,14 @@ export default {
     onLayoutChange() {
       /* Workaround for #1677, can be removed when bqplot/bqplot#1531 is released */
       window.dispatchEvent(new Event('resize'));
+    },
+    handleResize() {
+      console.log("goldenlayout ref: " + this.$refs.goldenLayout)
+      console.log("all refs: " + this.$refs)
+      if (this.$refs.goldenLayout) {
+        console.log("Got here! Updating size")
+        this.$refs.goldenLayout.updateSize();
+      }
     }
   },
   mounted() {
@@ -188,6 +197,34 @@ export default {
     if (jpOutputElem) {
       jpOutputElem.classList.remove('jupyter-widgets');
     }
+
+    // Listen for resize events and trigger GoldenLayout update
+    this.$on('resize', this.handleResize);
+    window.addEventListener('resize', this.handleResize);
+
+    // Try to resize goldenLayout element after everything is initialized
+    this.$nextTick(() => {
+      const goldenLayout = this.$refs.goldenLayout;
+
+      if (goldenLayout) {
+        // Re-initialize GoldenLayout if needed
+        const layout = new GoldenLayout(goldenLayout, { /* your config */ });
+
+        layout.init();
+        layout.updateSize(); // Make sure the layout is updated
+      }
+    });
+
+    // Adding IntersectionObserver to handle resize when the widget comes into view
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          this.handleResize();
+        }
+      });
+    }, { threshold: 0.5 });
+
+    observer.observe(this.$refs.goldenLayout);
   }
 };
 </script>
