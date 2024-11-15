@@ -1602,6 +1602,9 @@ class LayerSelect(SelectPluginComponent):
                     if live_plugin_results is None:
                         live_plugin_results = layer.layer.data.meta.get('_update_live_plugin_results', None) is not None  # noqa
 
+                    print(f"color_mode is {getattr(viewer.state, 'color_mode', 'None')}")
+                    if hasattr(layer.state, 'cmap'):
+                        print(f"cmap: {layer.state.cmap}")
                     if (getattr(viewer.state, 'color_mode', None) == 'Colormaps'
                             and hasattr(layer.state, 'cmap')):
                         colors.append(layer.state.cmap.name)
@@ -1714,6 +1717,8 @@ class LayerSelect(SelectPluginComponent):
 
     @observe('filters', 'sort_by')
     def _update_layer_items(self, msg={}):
+        #if isinstance(msg, dict) and "name" not in msg:
+        #    print(f"Calling update_layer_items from message: {msg}")
         # NOTE: _on_layers_changed is passed without a msg object during init
         # TODO: Handle changes to just one item without recompiling the whole thing
         manual_items = [{'label': label} for label in self.manual_options]
@@ -1733,7 +1738,7 @@ class LayerSelect(SelectPluginComponent):
             if self.app.state.layer_icons.get(layer.layer.label) or
             self.only_wcs_layers
         ]
-        print(layer_labels)
+        #print(layer_labels)
         unique_layer_labels = list(set(layer_labels))
         layer_items = [self._layer_to_dict(layer_label) for layer_label in unique_layer_labels]
 
@@ -1751,7 +1756,7 @@ class LayerSelect(SelectPluginComponent):
             layer_items.sort(key=_sort_by_icon)
 
         self.items = manual_items + layer_items
-        print(f"Items: {self.items}")
+        #print(f"Items: {self.items}")
         #self.send_state("items")
 
         self._apply_default_selection()
