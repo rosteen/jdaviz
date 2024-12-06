@@ -1502,6 +1502,7 @@ class LayerSelect(SelectPluginComponent):
         self.hub.subscribe(self, SubsetDeleteMessage,
                            handler=lambda _: self._update_layer_items())
 
+        #self.plugin = plugin
         self.sort_by = sort_by
         self.app.state.add_callback('layer_icons', self._update_layer_items)
         self.add_observe(viewer, self._on_viewer_selected_changed)
@@ -1602,9 +1603,6 @@ class LayerSelect(SelectPluginComponent):
                     if live_plugin_results is None:
                         live_plugin_results = layer.layer.data.meta.get('_update_live_plugin_results', None) is not None  # noqa
 
-                    print(f"color_mode is {getattr(viewer.state, 'color_mode', 'None')}")
-                    if hasattr(layer.state, 'cmap'):
-                        print(f"cmap: {layer.state.cmap}")
                     if (getattr(viewer.state, 'color_mode', None) == 'Colormaps'
                             and hasattr(layer.state, 'cmap')):
                         colors.append(layer.state.cmap.name)
@@ -1678,6 +1676,7 @@ class LayerSelect(SelectPluginComponent):
                         layer.add_callback('visible', self._update_layer_items)
 
     def _on_subset_created(self, msg=None):
+        print("Got subset created message")
         new_subset_label = self.app.data_collection.subset_groups[-1].label
         viewer = self.viewer if isinstance(self.viewer, list) else [self.viewer]
         for current_viewer in viewer:
@@ -1756,8 +1755,6 @@ class LayerSelect(SelectPluginComponent):
             layer_items.sort(key=_sort_by_icon)
 
         self.items = manual_items + layer_items
-        #print(f"Items: {self.items}")
-        #self.send_state("items")
 
         self._apply_default_selection()
 
@@ -4493,6 +4490,7 @@ class PlotOptionsSyncState(BasePluginComponent):
             # currently in subscribed states will be ignored.
             for viewer in self.subscribed_viewers:
                 viewer._update_layer_icons()
+                viewer.data_menu.layer._update_layer_items()
             # callbacks from the viewer state also do not trigger an update to the
             # layer items (tabs), so we'll force those to update from here as well.
             self.plugin.layer._update_layer_items()
