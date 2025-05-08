@@ -53,7 +53,8 @@ def _flux_to_sb_unit(flux_unit, angle_unit):
     return sb_unit
 
 
-@tray_registry('g-unit-conversion', label="Unit Conversion")
+@tray_registry('g-unit-conversion', label="Unit Conversion",
+               category="app:options")
 class UnitConversion(PluginTemplateMixin):
     """
     The Unit Conversion plugin handles global app-wide unit-conversion.
@@ -164,6 +165,19 @@ class UnitConversion(PluginTemplateMixin):
         self.spectral_y_type = SelectPluginComponent(self,
                                                      items='spectral_y_type_items',
                                                      selected='spectral_y_type_selected')
+
+        self._set_relevant()
+
+    @observe('spectral_unit_selected', 'flux_unit_selected',
+             'angle_unit_selected', 'time_unit_selected')
+    def _set_relevant(self, *args):
+        if self.app.config != 'deconfigged':
+            return
+        if (not self.spectral_unit_selected and not self.flux_unit_selected
+                and not self.angle_unit_selected and not self.time_unit_selected):
+            self.irrelevant_msg = 'No datasets with valid units loaded'
+        else:
+            self.irrelevant_msg = ''
 
     @property
     def user_api(self):
@@ -342,21 +356,21 @@ class UnitConversion(PluginTemplateMixin):
 
         axis = msg.get('name').split('_')[0]
 
-        if axis == 'spectral' and self.spectrum_viewer:
-            xunit = _valid_glue_display_unit(self.spectral_unit.selected, self.spectrum_viewer, 'x')
-            self.spectrum_viewer.state.x_display_unit = xunit
-            self.spectrum_viewer.set_plot_axes()
-        elif axis == 'spectral' and self.spectrum_2d_viewer:
-            xunit = _valid_glue_display_unit(self.spectral_unit.selected,
-                                             self.spectrum_2d_viewer, 'x')
+        if axis == 'spectral':
+            for sv in self.spectrum_1d_viewers:
+                xunit = _valid_glue_display_unit(self.spectral_unit.selected, sv, 'x')
+                sv.state.x_display_unit = xunit
+                sv.set_plot_axes()
+            for s2dv in self.spectrum_2d_viewers:
+                xunit = _valid_glue_display_unit(self.spectral_unit.selected, s2dv, 'x')
 
         elif axis == 'flux':
             # handle spectral y-unit first since that is a more apparent change to the user
             # and feels laggy if it is done later
             if self.spectral_y_type_selected == 'Flux':
                 self._handle_spectral_y_unit()
-            if self.spectrum_viewer:
-                self.spectrum_viewer.set_plot_axes()
+            for sv in self.spectrum_1d_viewers:
+                sv.set_plot_axes()
 
             if len(self.angle_unit_selected):
                 # NOTE: setting sb_unit_selected will call this method again with axis=='sb',
@@ -382,8 +396,8 @@ class UnitConversion(PluginTemplateMixin):
                 self._handle_spectral_y_unit()
 
             self._handle_attribute_display_unit(self.sb_unit_selected)
-            if self.spectrum_viewer:
-                self.spectrum_viewer.set_plot_axes()
+            for sv in self.spectrum_1d_viewers:
+                sv.set_plot_axes()
 
         # custom axes downstream can override _on_unit_selected if anything needs to be
         # processed before the GlobalDisplayUnitChanged message is broadcast
@@ -406,17 +420,22 @@ class UnitConversion(PluginTemplateMixin):
             yunit = _valid_glue_display_unit(self.sb_unit_selected, self.spectrum_viewer, 'y')
         else:
             yunit = _valid_glue_display_unit(self.flux_unit_selected, self.spectrum_viewer, 'y')
-        if self.spectrum_viewer.state.y_display_unit == yunit:
-            self.spectrum_viewer.set_plot_axes()
-            return
-        try:
-            self.spectrum_viewer.state.y_display_unit = yunit
-        except ValueError:
-            # may not be data in the viewer, or unit may be incompatible
-            pass
-        else:
-            self.spectrum_viewer.set_plot_axes()
 
+        spectral_y_change = False
+        for sv in self.spectrum_1d_viewers:
+            if sv.state.y_display_unit == yunit:
+                sv.set_plot_axes()
+                continue
+            try:
+                sv.state.y_display_unit = yunit
+            except ValueError:
+                # may not be data in the viewer, or unit may be incompatible
+                pass
+            else:
+                sv.set_plot_axes()
+                spectral_y_change = True
+
+        if spectral_y_change:
             # broadcast that there has been a change in the spectrum viewer y axis,
             self.hub.broadcast(GlobalDisplayUnitChanged('spectral_y',
                                                         yunit,

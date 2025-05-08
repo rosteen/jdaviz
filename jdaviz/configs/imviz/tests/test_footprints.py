@@ -302,3 +302,32 @@ def test_footprint_updates_on_rotation(imviz_helper):
     # at the top of the viewer, and this test will fail.
     marks = _get_markers_from_viewer(imviz_helper.default_viewer)
     assert np.concatenate([marks[0].y, marks[1].y]).min() < -3
+
+
+def test_footprint_select(imviz_helper):
+    wcs = WCS({'CTYPE1': 'RA---TAN', 'CUNIT1': 'deg', 'CDELT1': -0.0002777777778,
+               'CRPIX1': 1, 'CRVAL1': 9.423508457380343,
+               'CTYPE2': 'DEC--TAN', 'CUNIT2': 'deg', 'CDELT2': 0.0002777777778,
+               'CRPIX2': 1, 'CRVAL2': -33.71313112382379})
+    arr = np.arange(40000).reshape(200, 200)
+    ndd = NDData(arr, wcs=wcs)
+    imviz_helper.load_data(ndd)
+    fp = imviz_helper.plugins["Footprints"]
+    toolbar = imviz_helper.viewers['imviz-0']._obj.toolbar
+    tool = toolbar.tools['jdaviz:selectfootprint']
+    assert tool.is_visible() is False
+
+    with fp.as_active():
+        current_overlay = fp.overlay.selected
+        assert current_overlay == "default"
+        fp.preset = "MIRI"
+        tool.on_mouse_event({'domain': {'x': 95, 'y': 140}})
+        assert current_overlay == "default"
+        assert tool.is_visible() is True
+
+        # Add a new overlay
+        fp.add_overlay("layer1")
+        fp.overlay = "layer1"
+        fp.v3_offset = 10
+        tool.on_mouse_event({'domain': {'x': 95, 'y': 140}})
+        assert fp.overlay.selected == "layer1"

@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from inspect import isclass
 
 import numpy as np
-from glue.core import HubListener
+from glue.core import ComponentID, HubListener
 from glue.core.edit_subset_mode import NewMode
 from glue.core.message import SubsetCreateMessage, SubsetDeleteMessage
 from glue.core.subset import Subset, MaskSubsetState
@@ -56,6 +56,7 @@ class ConfigHelper(HubListener):
         Verbosity of the history logger in the application.
     """
     _default_configuration = 'default'
+    _component_ids = {}
 
     def __init__(self, app=None, verbosity='warning', history_verbosity='info'):
         if app is None:
@@ -222,6 +223,31 @@ class ConfigHelper(HubListener):
         return {viewer._ref_or_id: viewer.user_api
                 for viewer in self.app._viewer_store.values()}
 
+    def _get_clone_viewer_reference(self, reference):
+        base_name = reference.split("[")[0]
+        name = base_name
+        ind = 0
+        while name in self.viewers.keys():
+            ind += 1
+            name = f"{base_name}[{ind}]"
+        return name
+
+    def _set_data_component(self, data, component_label, values):
+        if component_label in self._component_ids:
+            component_id = self._component_ids[component_label]
+        else:
+            existing_components = [component.label for component in data.components]
+            if component_label in existing_components:
+                component_id = data.components[existing_components.index(component_label)]
+            else:
+                component_id = ComponentID(component_label)
+                self._component_ids[component_label] = component_id
+
+        if component_id in data.components:
+            data.update_components({component_id: values})
+        else:
+            data.add_component(values, component_id)
+
     @property
     @deprecated(since="4.2", alternative="plugins['Model Fitting'].fitted_models")
     def fitted_models(self):
@@ -367,9 +393,13 @@ class ConfigHelper(HubListener):
             self.app.layout.height = height
             self.app.state.settings['context']['notebook']['max_height'] = height
 
-        if self.app.config == 'specviz' or self.app.state.dev_loaders:
-            if not len(self.viewers):
+        if self.app.config in ('specviz', 'specviz2d', 'lcviz') or self.app.state.dev_loaders:
+            if not len(self.viewers) and not len(self.app.state.drawer_content):
                 self.app.state.drawer_content = 'loaders'
+            else:
+                self.app.state.drawer_content = 'plugins'
+        else:
+            self.app.state.drawer_content = 'plugins'
 
         show_widget(self.app, loc=loc, title=title)
 
@@ -778,7 +808,7 @@ class ImageConfigHelper(ConfigHelper):
                                     CirclePixelRegion, EllipsePixelRegion,
                                     RectanglePixelRegion, CircleAnnulusPixelRegion))
                     and self.app._align_by == "wcs"):
-                bad_regions.append((region, 'Pixel region provided by data is linked by WCS'))
+                bad_regions.append((region, 'Pixel region provided by data is aligned by WCS'))
                 continue
 
             # photutils: Convert to regions shape first
