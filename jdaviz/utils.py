@@ -698,6 +698,9 @@ def download_uri_to_path(possible_uri, cache=None, local_path=os.curdir, timeout
                 (status, msg, url) = Observations.download_file(
                     possible_uri, cache=cache, local_path=local_path
                 )
+                print(status)
+                print(msg)
+                print(url)
         else:
             status = "COMPLETE"
 
