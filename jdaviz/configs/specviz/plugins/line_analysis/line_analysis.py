@@ -6,7 +6,7 @@ from glue.core.message import (SubsetDeleteMessage,
 from glue_jupyter.common.toolbar_vuetify import read_icon
 from traitlets import Bool, List, Float, Unicode, observe
 from astropy import units as u
-from specutils import analysis, Spectrum1D
+from specutils import analysis, Spectrum
 
 from jdaviz.configs.specviz.plugins.viewers import Spectrum1DViewer
 from jdaviz.core.events import (AddDataMessage,
@@ -28,7 +28,8 @@ from jdaviz.core.template_mixin import (PluginTemplateMixin,
                                         with_spinner)
 from jdaviz.core.user_api import PluginUserApi
 from jdaviz.core.tools import ICON_DIR
-from jdaviz.core.unit_conversion_utils import check_if_unit_is_per_solid_angle
+from jdaviz.core.unit_conversion_utils import (check_if_unit_is_per_solid_angle,
+                                               coerce_unit)
 
 
 __all__ = ['LineAnalysis']
@@ -38,30 +39,6 @@ FUNCTIONS = {"Line Flux": analysis.line_flux,
              "Gaussian Sigma Width": analysis.gaussian_sigma_width,
              "Gaussian FWHM": analysis.gaussian_fwhm,
              "Centroid": analysis.centroid}
-
-
-def _coerce_unit(quantity):
-    """
-    coerce the unit on a quantity to have a single length unit (will take the first length
-    unit with a power of 1) and to strip any constants from the units.
-    """
-    # for some reason, quantity.unit.powers gives floats which then raise an error in
-    # quantity.to and we want to avoid casting to integer in case of fractional powers
-    unit = u.Unit(str(quantity.unit))
-    unit_types = [str(subunit.physical_type) for subunit in unit.bases]
-    length_inds = [ind for ind, (base, power, unit_type)
-                   in enumerate(zip(unit.bases, unit.powers, unit_types))
-                   if unit_type == 'length' and abs(power) == 1]
-    # we want to force all length units (not area) to use the same base unit so they can
-    # combine/cancel appropriately
-    coerced_bases = [unit.bases[i if i not in length_inds else length_inds[0]]
-                     for i in range(len(unit.bases))]
-    coerced_unit_string = ' * '.join([f'{base}**{power}'
-                                      for base, power in zip(coerced_bases, unit.powers)])
-    coerced_quantity = quantity.to(coerced_unit_string)
-    if getattr(quantity, 'uncertainty', None) is not None:
-        coerced_quantity.uncertainty = quantity.uncertainty.to(coerced_unit_string)
-    return coerced_quantity
 
 
 @tray_registry('specviz-line-analysis', label="Line Analysis", category="data:analysis")
@@ -151,25 +128,27 @@ class LineAnalysis(PluginTemplateMixin, DatasetSelectMixin, TableMixin,
         self.table.headers_avail = headers
         self.table.headers_visible = [h for h in headers if ':' not in h]
 
-        self._set_relevant()
+        self.observe_traitlets_for_relevancy(traitlets_to_observe=['dataset_items'],
+                                             irrelevant_msg_callback=self._irrelevant_msg_callback)
 
-    @observe('dataset_items')
-    def _set_relevant(self, *args):
+    def _irrelevant_msg_callback(self, *args):
         if self.app.config == 'deconfigged':
             if not len(self.dataset_items):
-                self.irrelevant_msg = 'Line Analysis unavailable without data loaded in spectrum viewer'  # noqa
+                irrelevant_msg = 'Line Analysis unavailable without data loaded in spectrum viewer'  # noqa
             else:
-                self.irrelevant_msg = ''
+                irrelevant_msg = ''
         else:
             sv = self.spectrum_viewer
             if sv is None:
-                self.irrelevant_msg = 'Line Analysis unavailable without spectrum viewer'
+                irrelevant_msg = 'Line Analysis unavailable without spectrum viewer'
             elif not len(sv.layers):
-                self.irrelevant_msg = ''
+                irrelevant_msg = ''
                 self.disabled_msg = 'Line Analysis unavailable without data loaded in spectrum viewer'  # noqa
             else:
-                self.irrelevant_msg = ''
+                irrelevant_msg = ''
                 self.disabled_msg = ''
+
+        return irrelevant_msg
 
     @property
     def user_api(self):
@@ -218,21 +197,41 @@ class LineAnalysis(PluginTemplateMixin, DatasetSelectMixin, TableMixin,
         else:
             self.disabled_msg = ''
 
+    def _reset_results_and_marks(self):
+        """Reset results, results_available, and clear continuum marks."""
+        self.results_available = False
+        self.results = [{'function': function, 'result': ''} for function in FUNCTIONS]
+        self._update_continuum_marks()
+
     def _on_viewer_subsets_changed(self, msg):
         """
-        Update the statistics if any of the referenced regions have changed
+        Update the statistics if the current selection spectral region has been
+        modified or deleted.
 
         Parameters
         ----------
         msg : `glue.core.Message`
             The glue message passed to this callback method.
         """
-        if (msg.subset.label in [self.spectral_subset_selected,
-                                 self.continuum_subset_selected]):
-            self._calculate_statistics(msg)
+
+        current_selections = [self.spectral_subset_selected,
+                              self.continuum_subset_selected]
+
+        # If a currently selected subset is deleted, just clear marks and statistics.
+        # The re-calculation of statistics will happen subsequently when the default
+        # selection is applied in the drop down and this method is called again
+        if isinstance(msg, SubsetDeleteMessage):
+            if msg.subset.label in current_selections:
+                self._reset_results_and_marks()
+                return
+
+        else:
+            if msg.subset.label in current_selections:
+                self._calculate_statistics(msg)
 
     def _on_global_display_unit_changed(self, msg):
-        self._calculate_statistics(msg)
+        update_marks = msg.axis != 'spectral'
+        self._calculate_statistics(msg, update_marks=update_marks)
 
     @observe('is_active')
     def _is_active_changed(self, msg):
@@ -247,9 +246,7 @@ class LineAnalysis(PluginTemplateMixin, DatasetSelectMixin, TableMixin,
 
     def update_results(self, results=None):
         if results is None:
-            self.results_available = False
-            self.results = [{'function': function, 'result': ''} for function in FUNCTIONS]
-            self._update_continuum_marks()
+            self._reset_results_and_marks()
         else:
             self.results = results
             self.results_available = True
@@ -314,11 +311,12 @@ class LineAnalysis(PluginTemplateMixin, DatasetSelectMixin, TableMixin,
     @observe("dataset_selected", "spectral_subset_selected",
              "continuum_subset_selected", "continuum_width")
     @with_spinner('results_computing')
-    def _calculate_statistics(self, msg={}, store_results=False):
+    def _calculate_statistics(self, msg={}, store_results=False, update_marks=True):
         """
         Run the line analysis functions on the selected data/subset and
         display the results.
         """
+
         if not hasattr(self, 'dataset') or self.app._jdaviz_helper is None:  # noqa
             # during initial init, this can trigger before the component is initialized
             return
@@ -336,7 +334,8 @@ class LineAnalysis(PluginTemplateMixin, DatasetSelectMixin, TableMixin,
 
         spectrum, continuum, spec_subtracted = self._get_continuum(self.dataset,
                                                                    self.spectral_subset,
-                                                                   update_marks=True)
+                                                                   update_marks=update_marks)
+
         if spectrum is None:
             self.update_results(None)
             return
@@ -386,7 +385,7 @@ class LineAnalysis(PluginTemplateMixin, DatasetSelectMixin, TableMixin,
                 if (flux_unit.is_equivalent(u.Jy) or
                    flux_unit.is_equivalent(u.Jy / solid_angle_in_flux_unit)):
                     # Perform integration in frequency space
-                    freq_spec = Spectrum1D(
+                    freq_spec = Spectrum(
                         spectral_axis=spec_subtracted.spectral_axis.to(u.Hz,
                                                                        equivalencies=u.spectral()),
                         flux=spec_subtracted.flux,
@@ -403,7 +402,7 @@ class LineAnalysis(PluginTemplateMixin, DatasetSelectMixin, TableMixin,
                         # user
                         self.hub.broadcast(SnackbarMessage(
                             f"failed to calculate line analysis statistics: {e}", sender=self,
-                            color="warning"))
+                            color="warning", traceback=e))
                         self.update_results(None)
                         return
 
@@ -422,7 +421,7 @@ class LineAnalysis(PluginTemplateMixin, DatasetSelectMixin, TableMixin,
                 elif (flux_unit.is_equivalent(u.Unit('W/(m2 m)')) or
                         flux_unit.is_equivalent(u.Unit(f'W/(m2 m {solid_angle_string})'))):
                     # Perform integration in wavelength space using MKS unit (meters)
-                    wave_spec = Spectrum1D(
+                    wave_spec = Spectrum(
                         spectral_axis=spec_subtracted.spectral_axis.to(u.m,
                                                                        equivalencies=u.spectral()),
                         flux=spec_subtracted.flux,
@@ -438,7 +437,7 @@ class LineAnalysis(PluginTemplateMixin, DatasetSelectMixin, TableMixin,
                         # user
                         self.hub.broadcast(SnackbarMessage(
                             f"failed to calculate line analysis statistics: {e}", sender=self,
-                            color="warning"))
+                            color="warning", traceback=e))
                         self.update_results(None)
                         return
                     # When flux is equivalent to Jy, lineflux result should be shown in W/m2
@@ -475,17 +474,9 @@ class LineAnalysis(PluginTemplateMixin, DatasetSelectMixin, TableMixin,
                 temp_result = FUNCTIONS[function](spec_subtracted, region=None)
                 self.results_centroid = temp_result.to_value(u.AA, equivalencies=u.spectral())
             else:
-                # if the minimum flux is negative, translate the spectrum until it is
-                # non-negative for the these line analysis functions:
-                if spec_subtracted.flux.min() < 0:
-                    spec_subtracted_nonneg_flux = (
-                            spec_subtracted - np.min((spectrum - continuum).flux)
-                    )
-                else:
-                    spec_subtracted_nonneg_flux = spec_subtracted
-                temp_result = FUNCTIONS[function](spec_subtracted_nonneg_flux)
+                temp_result = FUNCTIONS[function](spec_subtracted)
 
-            temp_result = _coerce_unit(temp_result)
+            temp_result = coerce_unit(temp_result)
             temp_results.append({'function': function,
                                  'result': str(temp_result.value),
                                  'uncertainty': _uncertainty(temp_result),

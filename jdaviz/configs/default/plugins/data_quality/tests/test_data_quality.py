@@ -1,9 +1,7 @@
 import warnings
-from pathlib import Path
 import pytest
 
 import numpy as np
-from astroquery.mast import Observations
 from stdatamodels.jwst.datamodels.dqflags import pixel as pixel_jwst
 from glue.core.subset import RectangularROI
 
@@ -11,6 +9,7 @@ from jdaviz.configs.imviz.plugins.parsers import HAS_ROMAN_DATAMODELS
 from jdaviz.configs.default.plugins.data_quality.dq_utils import (
     load_flag_map, write_flag_map
 )
+from jdaviz.utils import cached_uri
 
 
 @pytest.mark.parametrize(
@@ -77,20 +76,19 @@ def test_roman_against_rdm():
 
 
 @pytest.mark.remote_data
-def test_data_quality_plugin(imviz_helper, tmp_path):
+def test_data_quality_plugin(imviz_helper):
     uri = "mast:JWST/product/jw01895001004_07101_00001_nrca3_cal.fits"
-    local_path = str(tmp_path / Path(uri).name)
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         imviz_helper.load_data(
-            uri, cache=True, local_path=local_path, ext=('SCI', 'DQ')
+            cached_uri(uri), cache=True, ext=('SCI', 'DQ')
         )
 
     assert len(imviz_helper.app.data_collection) == 2
 
     # this assumption is made in the DQ plugin (for now)
-    assert imviz_helper.app.data_collection[-1].label.endswith('[DQ]')
+    assert imviz_helper.app.data_collection[-1].label.endswith('[DQ,1]')
 
     dq_plugin = imviz_helper.plugins['Data Quality']._obj
 
@@ -154,6 +152,8 @@ def test_data_quality_plugin(imviz_helper, tmp_path):
     # check that a pixel without a DQ flag has no DQ mouseover label:
     label_mouseover._viewer_mouse_event(viewer,
                                         {'event': 'mousemove', 'domain': {'x': 1361, 'y': 684}})
+    dq_val = dq_data[684, 1361]
+    assert np.isnan(dq_val)
     label_mouseover_text = label_mouseover.as_text()[0]
     assert 'DQ' not in label_mouseover_text
 
@@ -173,16 +173,13 @@ def test_data_quality_plugin(imviz_helper, tmp_path):
 
 
 @pytest.mark.remote_data
-def test_data_quality_plugin_hst_wfc3(imviz_helper, tmp_path):
+def test_data_quality_plugin_hst_wfc3(imviz_helper):
 
     # load HST/WFC3-UVIS observations:
     uri = "mast:HST/product/hst_17183_02_wfc3_uvis_g280_iexr02mt_flt.fits"
-    download_path = str(tmp_path / Path(uri).name)
-    Observations.download_file(uri, local_path=download_path)
-
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        imviz_helper.load_data(download_path, ext=('SCI', 'DQ'))
+        imviz_helper.load_data(cached_uri(uri), cache=True, ext=('SCI', 'DQ'))
 
     assert len(imviz_helper.app.data_collection) == 2
 
@@ -196,15 +193,12 @@ def test_data_quality_plugin_hst_wfc3(imviz_helper, tmp_path):
 
 
 @pytest.mark.remote_data
-def test_data_quality_plugin_hst_acs(imviz_helper, tmp_path):
+def test_data_quality_plugin_hst_acs(imviz_helper):
     # load HST/ACS observations:
     uri = "mast:HST/product/hst_16968_01_acs_wfc_f606w_jezz01l3_flt.fits"
-    download_path = str(tmp_path / Path(uri).name)
-    Observations.download_file(uri, local_path=download_path)
-
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        imviz_helper.load_data(download_path, ext=('SCI', 'DQ'))
+        imviz_helper.load_data(cached_uri(uri), cache=True, ext=('SCI', 'DQ'))
 
     assert len(imviz_helper.app.data_collection) == 2
 
@@ -221,15 +215,12 @@ def test_data_quality_plugin_hst_acs(imviz_helper, tmp_path):
 
 
 @pytest.mark.remote_data
-def test_cubeviz_layer_visibility_bug(cubeviz_helper, tmp_path):
+def test_cubeviz_layer_visibility_bug(cubeviz_helper):
     # regression test for bug:
-    uri = "mast:JWST/product/jw02732-o004_t004_miri_ch1-short_s3d.fits"
-    download_path = str(tmp_path / Path(uri).name)
-    Observations.download_file(uri, local_path=download_path)
-
+    uri = "mast:JWST/product/jw02732-c1001_t004_miri_ch1-short_s3d.fits"
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        cubeviz_helper.load_data(download_path)
+        cubeviz_helper.load_data(cached_uri(uri), cache=True)
 
     # create a moment map:
     mm = cubeviz_helper.plugins['Moment Maps']

@@ -10,7 +10,7 @@ from glue.core.subset_group import GroupedSubset
 from regions import (PixCoord, CirclePixelRegion, CircleSkyRegion, RectanglePixelRegion,
                      EllipsePixelRegion, CircleAnnulusPixelRegion)
 from numpy.testing import assert_allclose
-from specutils import SpectralRegion, Spectrum1D
+from specutils import SpectralRegion, Spectrum
 from astropy.nddata import NDData
 
 from jdaviz.utils import get_subset_type, MultiMaskSubsetState
@@ -160,7 +160,7 @@ def test_region_from_subset_3d(cubeviz_helper):
 
 
 def test_region_from_subset_profile(cubeviz_helper, spectral_cube_wcs):
-    data = Spectrum1D(flux=np.ones((128, 128, 256)) * u.nJy, wcs=spectral_cube_wcs)
+    data = Spectrum(flux=np.ones((128, 128, 256)) * u.nJy, wcs=spectral_cube_wcs)
     subset_plugin = cubeviz_helper.plugins['Subset Tools']._obj
 
     cubeviz_helper.load_data(data, data_label='Test 1D Flux')
@@ -210,7 +210,7 @@ def test_region_from_subset_profile(cubeviz_helper, spectral_cube_wcs):
 
 def test_disjoint_spectral_subset(cubeviz_helper, spectral_cube_wcs):
     subset_plugin = cubeviz_helper.plugins['Subset Tools']._obj
-    data = Spectrum1D(flux=np.ones((128, 128, 256)) * u.nJy, wcs=spectral_cube_wcs)
+    data = Spectrum(flux=np.ones((128, 128, 256)) * u.nJy, wcs=spectral_cube_wcs)
     cubeviz_helper.load_data(data, data_label="Test Flux")
 
     spectral_axis_unit = u.Unit(cubeviz_helper.plugins['Unit Conversion'].spectral_unit.selected)
@@ -551,7 +551,7 @@ def test_composite_region_from_subset_2d(specviz_helper, spectrum1d):
     assert subset_plugin.subset_types == ['Range', 'Range', 'Range', 'Range']
     assert subset_plugin.glue_state_types == ['AndState', 'AndNotState', 'OrState', 'AndState']
 
-    subset_plugin.vue_simplify_subset()
+    subset_plugin.simplify_subset()
     assert subset_plugin.glue_state_types == ["RangeSubsetState", "OrState"]
 
     for layer in viewer.state.layers:
@@ -706,7 +706,7 @@ def test_overlapping_spectral_regions(specviz_helper, spectrum1d):
     subset_plugin.subset.selected = 'Subset 1'
 
     assert subset_plugin.can_simplify
-    subset_plugin.vue_simplify_subset()
+    subset_plugin.simplify_subset()
 
     reg = specviz_helper.app.get_subsets("Subset 1")
     assert reg.lower.value == 6400 and reg.upper.value == 7400
@@ -726,7 +726,7 @@ def test_only_overlapping_spectral_regions(specviz_helper, spectrum1d):
     subset_plugin.subset.selected = 'Subset 1'
 
     assert subset_plugin.can_simplify
-    subset_plugin.vue_simplify_subset()
+    subset_plugin.simplify_subset()
 
     reg = specviz_helper.app.get_subsets("Subset 1")
     assert reg[0].lower.value == 6400 and reg[0].upper.value == 7400
@@ -747,7 +747,7 @@ def test_overlapping_in_specviz2d(specviz2d_helper, mos_spectrum2d):
     subset_plugin.subset.selected = 'Subset 1'
 
     assert subset_plugin.can_simplify
-    subset_plugin.vue_simplify_subset()
+    subset_plugin.simplify_subset()
 
     reg = specviz2d_helper.app.get_subsets("Subset 1")
     assert reg.lower.value == 6400 and reg.upper.value == 7400
@@ -769,7 +769,7 @@ def test_only_overlapping_in_specviz2d(specviz2d_helper, mos_spectrum2d):
     subset_plugin.subset.selected = 'Subset 1'
 
     assert subset_plugin.can_simplify
-    subset_plugin.vue_simplify_subset()
+    subset_plugin.simplify_subset()
 
     reg = specviz2d_helper.app.get_subsets("Subset 1")
     assert reg[0].lower.value == 6400 and reg[0].upper.value == 7400
@@ -793,7 +793,7 @@ def test_draw2d_linking_specviz2d(specviz2d_helper):
 
     # Create a continuous 2D
     data = np.sin(x_values[:, np.newaxis]) * np.cos(y_values) * u.one
-    spectrum_data = Spectrum1D(data, wcs=wcs, meta=header)
+    spectrum_data = Spectrum(data, wcs=wcs, meta=header)
 
     specviz2d_helper.load_data(spectrum_2d=spectrum_data)
     viewer_1d = specviz2d_helper.app.get_viewer(
@@ -891,7 +891,7 @@ def test_delete_subsets_toolbar_selection(cubeviz_helper, spectral_cube_wcs):
     """
     Test that the toolbar selections get reset when the subset being actively edited gets deleted.
     """
-    data = Spectrum1D(flux=np.ones((128, 128, 256)) * u.nJy, wcs=spectral_cube_wcs)
+    data = Spectrum(flux=np.ones((128, 128, 256)) * u.nJy, wcs=spectral_cube_wcs)
     cubeviz_helper.load_data(data, data_label="Test Flux")
     dc = cubeviz_helper.app.data_collection
 
@@ -917,7 +917,7 @@ def test_delete_subsets_toolbar_selection(cubeviz_helper, spectral_cube_wcs):
 def test_delete_subsets_app_api(cubeviz_helper, spectral_cube_wcs):
     """Test app.delete_subsets."""
 
-    data = Spectrum1D(flux=np.ones((128, 128, 256)) * u.nJy, wcs=spectral_cube_wcs)
+    data = Spectrum(flux=np.ones((128, 128, 256)) * u.nJy, wcs=spectral_cube_wcs)
     cubeviz_helper.load_data(data, data_label="Test Flux")
     dc = cubeviz_helper.app.data_collection
     subset_plugin = cubeviz_helper.plugins['Subset Tools']
@@ -966,7 +966,7 @@ class TestRegionsFromSubsets:
     def test_get_regions_from_subsets_cubeviz(self, cubeviz_helper, spectral_cube_wcs):
         """ Basic tests for retrieving Sky Regions from spatial subsets in Cubeviz.
         """
-        data = Spectrum1D(flux=np.ones((128, 128, 256)) * u.nJy, wcs=spectral_cube_wcs)
+        data = Spectrum(flux=np.ones((128, 128, 256)) * u.nJy, wcs=spectral_cube_wcs)
         cubeviz_helper.load_data(data)
 
         # basic test, a single circular region

@@ -4,7 +4,7 @@ from astropy import units as u
 from astropy.utils.decorators import deprecated
 from regions.core.core import Region
 from glue.core.subset_group import GroupedSubset
-from specutils import SpectralRegion, Spectrum1D, SpectrumList, SpectrumCollection
+from specutils import SpectralRegion, Spectrum, SpectrumList, SpectrumCollection
 
 from jdaviz.core.helpers import ConfigHelper
 from jdaviz.core.events import RedshiftMessage
@@ -17,13 +17,13 @@ def _apply_redshift_to_spectra(spectra, redshift):
 
     flux = spectra.flux
     # This is a hack around inability to input separate redshift with
-    # a SpectralAxis instance in Spectrum1D
+    # a SpectralAxis instance in Spectrum
     spaxis = spectra.spectral_axis.value * spectra.spectral_axis.unit
     mask = spectra.mask
     uncertainty = spectra.uncertainty
-    output_spectra = Spectrum1D(flux, spectral_axis=spaxis,
-                                redshift=redshift, mask=mask,
-                                uncertainty=uncertainty)
+    output_spectra = Spectrum(flux, spectral_axis=spaxis,
+                              redshift=redshift, mask=mask,
+                              uncertainty=uncertainty)
 
     return output_spectra
 
@@ -46,19 +46,19 @@ class Specviz(ConfigHelper, LineListMixin):
     @deprecated(since="4.3", alternative="load")
     def load_data(self, data, data_label=None, format=None, show_in_viewer=True,
                   concat_by_file=False, cache=None, local_path=None, timeout=None,
-                  load_as_list=False):
+                  load_as_list=False, exposures=None, sources=None, load_all=False):
         """
         Load data into Specviz.
 
         Parameters
         ----------
-        data : str, `~specutils.Spectrum1D`, or `~specutils.SpectrumList`
-            Spectrum1D, SpectrumList, or path to compatible data file.
+        data : str, `~specutils.Spectrum`, or `~specutils.SpectrumList`
+            Spectrum, SpectrumList, or path to compatible data file.
         data_label : str
             The Glue data label found in the ``DataCollection``.
         format : str
             Loader format specification used to indicate data format in
-            `~specutils.Spectrum1D.read` io method.
+            `~specutils.Spectrum.read` io method.
         show_in_viewer : bool
             Show data in viewer(s).
         concat_by_file : bool
@@ -83,6 +83,18 @@ class Specviz(ConfigHelper, LineListMixin):
         if load_as_list and concat_by_file:
             raise ValueError("Cannot set both load_as_list and concat_by_file")
 
+        load_kwargs = {}
+        if cache is not None:
+            load_kwargs['cache'] = cache
+        if timeout is not None:
+            load_kwargs['timeout'] = timeout
+        if local_path is not None:
+            load_kwargs['local_path'] = local_path
+        if sources is not None:
+            load_kwargs['sources'] = sources
+        if exposures is not None:
+            load_kwargs['exposures'] = exposures
+
         if isinstance(data, (SpectrumList, SpectrumCollection)) and isinstance(data_label, list):
             if len(data_label) != len(data):
                 raise ValueError(f"Length of data labels list ({len(data_label)}) is different"
@@ -92,7 +104,7 @@ class Specviz(ConfigHelper, LineListMixin):
             for spec, label in zip(data, data_label):
                 self.load_data(spec, data_label=label,
                                show_in_viewer=show_in_viewer,
-                               cache=cache, local_path=local_path, timeout=timeout)
+                               **load_kwargs)
             return
 
         if load_as_list:
@@ -100,7 +112,7 @@ class Specviz(ConfigHelper, LineListMixin):
         elif concat_by_file:
             format = '1D Spectrum Concatenated'
         elif (isinstance(data, (SpectrumList, SpectrumCollection))
-                or (isinstance(data, Spectrum1D) and len(data.shape) == 2)):
+                or (isinstance(data, Spectrum) and len(data.shape) == 2)):
             format = '1D Spectrum List'
         else:
             format = '1D Spectrum'
@@ -108,8 +120,8 @@ class Specviz(ConfigHelper, LineListMixin):
             data_label = self.app.return_unique_name(data_label)
         self.load(data, format=format,
                   data_label=data_label,
-                  show_in_viewer=show_in_viewer,
-                  cache=cache, local_path=local_path, timeout=timeout)
+                  viewer='*' if show_in_viewer else [],
+                  **load_kwargs)
 
     @property
     def _spectrum_viewer(self):
@@ -136,7 +148,7 @@ class Specviz(ConfigHelper, LineListMixin):
         if data_label is not None:
             spectrum = get_data_method(data_label=data_label,
                                        spectral_subset=spectral_subset,
-                                       cls=Spectrum1D)
+                                       cls=Spectrum)
             spectra[data_label] = spectrum
         else:
             for layer_state in viewer.state.layers:
@@ -145,7 +157,7 @@ class Specviz(ConfigHelper, LineListMixin):
                     if lyr.label == spectral_subset:
                         spectrum = get_data_method(data_label=lyr.data.label,
                                                    spectral_subset=spectral_subset,
-                                                   cls=Spectrum1D)
+                                                   cls=Spectrum)
                         spectra[lyr.data.label] = spectrum
                     else:
                         continue
@@ -158,11 +170,11 @@ class Specviz(ConfigHelper, LineListMixin):
                         isinstance(all_subsets[lyr.label], SpectralRegion)):
                     spectrum = get_data_method(data_label=lyr.data.label,
                                                spectral_subset=lyr.label,
-                                               cls=Spectrum1D)
+                                               cls=Spectrum)
                     spectra[f'{lyr.data.label} ({lyr.label})'] = spectrum
                 else:
                     spectrum = get_data_method(data_label=lyr.label,
-                                               cls=Spectrum1D)
+                                               cls=Spectrum)
                     spectra[lyr.label] = spectrum
 
         if not apply_slider_redshift:
@@ -171,7 +183,7 @@ class Specviz(ConfigHelper, LineListMixin):
             return spectra
         else:
             output_spectra = {}
-            # We need to create new Spectrum1D outputs with the redshifts set
+            # We need to create new Spectrum outputs with the redshifts set
             for key in spectra.keys():
                 output_spectra[key] = _apply_redshift_to_spectra(spectra[key], self._redshift)
 
@@ -341,7 +353,7 @@ class Specviz(ConfigHelper, LineListMixin):
         sv = self.viewers[self._default_spectrum_viewer_reference_name]
         sv.set_tick_format(fmt, axis=['x', 'y'][axis])
 
-    def get_data(self, data_label=None, spectral_subset=None, cls=Spectrum1D,
+    def get_data(self, data_label=None, spectral_subset=None, cls=Spectrum,
                  use_display_units=False):
         """
         Returns data with name equal to data_label of type cls with subsets applied from
@@ -353,7 +365,7 @@ class Specviz(ConfigHelper, LineListMixin):
             Provide a label to retrieve a specific data set from data_collection.
         spectral_subset : str, optional
             Spectral subset applied to data.
-        cls : `~specutils.Spectrum1D`, optional
+        cls : `~specutils.Spectrum`, optional
             The type that data will be returned as.
         use_display_units: bool, optional
             Whether to convert to the display units defined in the <unit-conversion> plugin.

@@ -3,6 +3,7 @@ from functools import cached_property
 import numpy as np
 import astropy
 from astropy import units as u
+from astropy.coordinates import SpectralCoord
 from astropy.nddata import NDDataArray, StdDevUncertainty
 from traitlets import Any, Bool, Dict, Float, List, Unicode, observe
 
@@ -27,16 +28,17 @@ from jdaviz.configs.cubeviz.plugins.parsers import _return_spectrum_with_correct
 from jdaviz.configs.cubeviz.plugins.viewers import WithSliceIndicator
 
 
-__all__ = ['SpectralExtraction']
+__all__ = ['SpectralExtraction3D']
 
 
 @tray_registry(
-    'cubeviz-spectral-extraction', label="Spectral Extraction"
+    'spectral-extraction-3d', label="3D Spectral Extraction"
 )
-class SpectralExtraction(PluginTemplateMixin, ApertureSubsetSelectMixin,
-                         DatasetSelectMixin, AddResultsMixin):
+class SpectralExtraction3D(PluginTemplateMixin, ApertureSubsetSelectMixin,
+                           DatasetSelectMixin, AddResultsMixin):
     """
-    See the :ref:`Spectral Extraction Plugin Documentation <spectral-extraction>` for more details.
+    See the :ref:`3D Spectral Extraction Plugin Documentation <spectral-extraction>`
+    for more details.
 
     Only the following attributes and methods are available through the
     :ref:`public plugin API <plugin-apis>`:
@@ -227,10 +229,14 @@ class SpectralExtraction(PluginTemplateMixin, ApertureSubsetSelectMixin,
 
     @property
     def spatial_axes(self):
-        # Collapse an e.g. 3D spectral cube to 1D spectrum, assuming that last axis
-        # is always wavelength. This may need adjustment after the following
-        # specutils PR is merged: https://github.com/astropy/specutils/pull/1033
-        return (0, 1)
+        # Collapse an e.g. 3D spectral cube to 1D spectrum.
+        spatial_axes = [0, 1, 2]
+        spatial_axes.remove(self.spectral_axis_index)
+        return tuple(spatial_axes)
+
+    @property
+    def spectral_axis_index(self):
+        return self.cube.meta["spectral_axis_index"]
 
     @property
     def slice_indicator_viewers(self):
@@ -262,10 +268,11 @@ class SpectralExtraction(PluginTemplateMixin, ApertureSubsetSelectMixin,
                 try:
                     self._extract_in_new_instance(subset_lbl=subset_lbl,
                                                   auto_update=True, add_data=True)
-                except Exception:
+                except Exception as e:
                     msg = SnackbarMessage(
                         f"Automatic {self.resulting_product_name} extraction for {subset_lbl} failed",  # noqa
-                        color='error', sender=self, timeout=10000)
+                        color='error', sender=self, timeout=10000,
+                        traceback=e)
                 else:
                     msg = SnackbarMessage(
                         f"Automatic {self.resulting_product_name} extraction for {subset_lbl} successful",  # noqa
@@ -274,8 +281,8 @@ class SpectralExtraction(PluginTemplateMixin, ApertureSubsetSelectMixin,
 
     def _extract_in_new_instance(self, dataset=None, function='Sum', subset_lbl=None,
                                  auto_update=False, add_data=False):
-        # create a new instance of the Spectral Extraction plugin (to not affect the instance in
-        # the tray) and extract the entire cube with defaults.
+        # create a new instance of the 3D Spectral Extraction plugin (to not
+        # affect the instance in the tray) and extract the entire cube with defaults.
         plg = self.new()
         plg.dataset.selected = self.dataset.selected if dataset is None else dataset
         if subset_lbl is not None:
@@ -495,7 +502,7 @@ class SpectralExtraction(PluginTemplateMixin, ApertureSubsetSelectMixin,
             # This is the attribute for a PaddedSpectrumWCS in the 3D case
             wcs = cube.coords.spectral_wcs
         else:
-            wcs = None
+            wcs = cube.coords
 
         # Filter out NaNs (False = good)
         mask = np.logical_or(mask, np.isnan(flux))
@@ -560,14 +567,19 @@ class SpectralExtraction(PluginTemplateMixin, ApertureSubsetSelectMixin,
 
         return self._return_extracted(cube, wcs, collapsed_nddata)
 
-    def _return_extracted(self, cube, wcs, collapsed_nddata):
-        # Convert to Spectrum1D, with the spectral axis in correct units:
+    def _return_extracted(self, cube, wcs, collapsed_nddata, pass_spectral_axis=False):
+        # Convert to Spectrum, with the spectral axis in correct units:
         if hasattr(cube.coords, 'spectral_wcs'):
             target_wave_unit = cube.coords.spectral_wcs.world_axis_units[0]
+            wcs = cube.coords.spectral_wcs
         elif hasattr(cube.coords, 'spectral'):
             target_wave_unit = cube.coords.spectral.world_axis_units[0]
+            wcs = cube.coords.spectral
         else:
             target_wave_unit = None
+            # Can't split out spectral from GWCS
+            wcs = cube.coords
+            pass_spectral_axis = True
 
         if target_wave_unit == '':
             target_wave_unit = 'pix'
@@ -576,12 +588,37 @@ class SpectralExtraction(PluginTemplateMixin, ApertureSubsetSelectMixin,
         mask = collapsed_nddata.mask
         uncertainty = collapsed_nddata.uncertainty
 
-        collapsed_spec = _return_spectrum_with_correct_units(
-            flux, wcs, collapsed_nddata.meta, data_type='flux',
-            target_wave_unit=target_wave_unit,
-            uncertainty=uncertainty,
-            mask=mask
-        )
+        if pass_spectral_axis:
+            wcs_args = [0, 0, 0]
+            spec_indices = np.arange(cube.shape[self.spectral_axis_index])
+            wcs_args[self.spectral_axis_index] = spec_indices
+            wcs_args.reverse()
+            spectral_and_spatial = wcs.pixel_to_world(*wcs_args)
+            spectral_axis = [x for x in spectral_and_spatial if isinstance(x, SpectralCoord)]
+            if len(spectral_axis):
+                spectral_axis = spectral_axis[0]
+            else:
+                # In this case we have a pixel spectral axis
+                world_index = cube.ndim - 1 - cube.meta['spectral_axis_index']
+                spectral_axis = spectral_and_spatial[world_index]
+                if spectral_axis.unit == "":
+                    spectral_axis = spectral_axis * u.pixel
+
+            collapsed_spec = _return_spectrum_with_correct_units(
+                flux, wcs, collapsed_nddata.meta, data_type='flux',
+                target_wave_unit=target_wave_unit,
+                uncertainty=uncertainty,
+                mask=mask,
+                spectral_axis=spectral_axis
+            )
+        else:
+            collapsed_spec = _return_spectrum_with_correct_units(
+                flux, wcs, collapsed_nddata.meta, data_type='flux',
+                target_wave_unit=target_wave_unit,
+                uncertainty=uncertainty,
+                mask=mask
+            )
+
         return collapsed_spec
 
     def _preview_x_from_extracted(self, extracted):
@@ -704,7 +741,8 @@ class SpectralExtraction(PluginTemplateMixin, ApertureSubsetSelectMixin,
         except Exception as e:
             self.hub.broadcast(SnackbarMessage(
                 f"Extraction failed: {repr(e)}",
-                sender=self, color="error"))
+                sender=self, color="error",
+                traceback=e))
 
     def vue_create_bg_spec(self, *args, **kwargs):
         self.extract_bg_spectrum(add_data=True)

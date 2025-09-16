@@ -1,7 +1,7 @@
 import numpy as np
 
 from astropy.convolution import convolve, Gaussian2DKernel
-from specutils import Spectrum1D
+from specutils import Spectrum
 from specutils.manipulation import gaussian_smooth
 from traitlets import List, Unicode, Bool, observe
 
@@ -59,7 +59,7 @@ class GaussianSmooth(PluginTemplateMixin, DatasetSelectMixin, AddResultsMixin):
             self.dataset._viewers = [self._default_spectrum_viewer_reference_name]
             self.dataset._clear_cache()
 
-        self.dataset.add_filter('not_from_this_plugin')
+        self.dataset.add_filter('not_from_this_plugin', 'is_spectrum_or_cube')
 
         self.mode = SelectPluginComponent(self,
                                           items='mode_items',
@@ -72,16 +72,8 @@ class GaussianSmooth(PluginTemplateMixin, DatasetSelectMixin, AddResultsMixin):
         # description displayed under plugin title in tray
         self._plugin_description = 'Smooth data with a Gaussian kernel.'
 
-        self._set_relevant()
-
-    @observe('dataset_items')
-    def _set_relevant(self, *args):
-        if self.app.config != 'deconfigged':
-            return
-        if not len(self.dataset_items):
-            self.irrelevant_msg = 'No valid datasets loaded'
-        else:
-            self.irrelevant_msg = ''
+        if self.app.config == 'deconfigged':
+            self.observe_traitlets_for_relevancy(traitlets_to_observe=['dataset_items'])
 
     @property
     def _default_spectrum_viewer_reference_name(self):
@@ -161,7 +153,7 @@ class GaussianSmooth(PluginTemplateMixin, DatasetSelectMixin, AddResultsMixin):
 
         Returns
         -------
-        spec : `~specutils.Spectrum1D`
+        spec : `~specutils.Spectrum`
             The smoothed spectrum or data cube
         """
         if self.mode_selected == 'Spatial':
@@ -181,7 +173,8 @@ class GaussianSmooth(PluginTemplateMixin, DatasetSelectMixin, AddResultsMixin):
 
         if add_data:
             # add data to the collection/viewer
-            self.add_results.add_results_from_plugin(results)
+            self.add_results.add_results_from_plugin(results,
+                                                     format=('1D Spectrum', '2D Spectrum'))
             self._set_default_results_label()
 
         snackbar_message = SnackbarMessage(
@@ -200,18 +193,18 @@ class GaussianSmooth(PluginTemplateMixin, DatasetSelectMixin, AddResultsMixin):
 
         Returns
         -------
-        spec : `~specutils.Spectrum1D`
+        spec : `~specutils.Spectrum`
             The smoothed spectrum
         """
         # Testing inputs to make sure putting smoothed spectrum into
         # datacollection works
         # input_flux = Quantity(np.array([0.2, 0.3, 2.2, 0.3]), u.Jy)
         # input_spaxis = Quantity(np.array([1, 2, 3, 4]), u.micron)
-        # spec1 = Spectrum1D(input_flux, spectral_axis=input_spaxis)
+        # spec1 = Spectrum(input_flux, spectral_axis=input_spaxis)
 
         # Takes the user input from the dialog (stddev) and uses it to
         # define a standard deviation for gaussian smoothing
-        cube = self.dataset.get_object(cls=Spectrum1D, statistic=None)
+        cube = self.dataset.get_object(cls=Spectrum, statistic=None)
         spec_smoothed = gaussian_smooth(cube, stddev=self.stddev)
 
         return spec_smoothed
@@ -225,7 +218,7 @@ class GaussianSmooth(PluginTemplateMixin, DatasetSelectMixin, AddResultsMixin):
 
         Returns
         -------
-        cube : `~specutils.Spectrum1D`
+        cube : `~specutils.Spectrum`
             The smoothed cube
         """
         cube = self.dataset.selected_obj
@@ -233,7 +226,7 @@ class GaussianSmooth(PluginTemplateMixin, DatasetSelectMixin, AddResultsMixin):
 
         # Extend the 2D kernel to have a length 1 spectral dimension, so that
         # we can do "3d" convolution to the whole cube
-        kernel = np.expand_dims(Gaussian2DKernel(self.stddev), 2)
+        kernel = np.expand_dims(Gaussian2DKernel(self.stddev), cube.meta['spectral_axis_index'])
 
         convolved_data = convolve(cube, kernel)
 
@@ -247,6 +240,6 @@ class GaussianSmooth(PluginTemplateMixin, DatasetSelectMixin, AddResultsMixin):
 
         # Create a new cube with the old metadata. Note that astropy
         # convolution generates values for masked (NaN) data.
-        newcube = Spectrum1D(flux=convolved_data * flux_unit, wcs=w)
+        newcube = Spectrum(flux=convolved_data * flux_unit, wcs=w)
 
         return newcube

@@ -5,7 +5,7 @@ from astropy import table
 from astropy import units as u
 from functools import cached_property
 from matplotlib.colors import cnames
-from specutils import Spectrum1D
+from specutils import Spectrum
 from scipy.interpolate import interp1d
 from glue.core import BaseData
 from glue_jupyter.bqplot.image import BqplotImageView
@@ -21,6 +21,7 @@ from jdaviz.core.linelists import load_preset_linelist, get_available_linelists
 from jdaviz.core.unit_conversion_utils import (spectral_axis_conversion,
                                                flux_conversion_general,
                                                all_flux_unit_conversion_equivs)
+from jdaviz.utils import SPECTRAL_AXIS_COMP_LABELS
 from jdaviz.core.freezable_state import FreezableProfileViewerState
 from jdaviz.configs.default.plugins.viewers import JdavizViewerMixin, JdavizProfileView
 
@@ -39,7 +40,7 @@ class Spectrum1DViewer(JdavizProfileView):
                     ['jdaviz:viewer_clone', 'jdaviz:sidebar_plot', 'jdaviz:sidebar_export']
                 ]
 
-    default_class = Spectrum1D
+    default_class = Spectrum
     spectral_lines = None
     _state_cls = FreezableProfileViewerState
     _default_profile_subset_type = 'spectral'
@@ -51,7 +52,16 @@ class Spectrum1DViewer(JdavizProfileView):
             if not len(self.layers):
                 return True
 
-            data_xunit = data.get_component(str(self.state.x_att)).units
+            # If we load, e.g.,  one spectrum in Frequency and one in Wavelength,
+            # the viewer state x_att won't match the component of the second spectrum since
+            # (as of Specutils 2.X) they're no longer both the non-specific "World 0"
+            if str(self.state.x_att) in data.component_ids():
+                data_xunit = data.get_component(str(self.state.x_att)).units
+            else:
+                for comp in SPECTRAL_AXIS_COMP_LABELS:
+                    if comp in data.component_ids():
+                        data_xunit = data.get_component(comp).units
+                        break
             data_yunit = data.get_component('flux').units
 
             viewer_xunit = self.state.x_display_unit
@@ -291,7 +301,7 @@ class Spectrum1DViewer(JdavizProfileView):
 class Spectrum2DViewer(JdavizViewerMixin, BqplotImageView):
     # Due to limitations in CCDData and 2D data that has spectral and spatial
     #  axes, the default conversion class must handle cubes
-    default_class = Spectrum1D
+    default_class = Spectrum
 
     # categories: zoom resets, zoom, pan, subset, select tools, shortcuts
     tools_nested = [
@@ -442,7 +452,7 @@ class Spectrum2DViewer(JdavizViewerMixin, BqplotImageView):
         self.figure.axes[1].tick_format = None
         self.figure.axes[1].label_location = "middle"
 
-        # Sync with Spectrum1D viewer (that is also used by other viz).
+        # Sync with Spectrum viewer (that is also used by other viz).
         # Make it so y axis label is not covering tick numbers.
         self.figure.fig_margin["left"] = 95
         self.figure.fig_margin["bottom"] = 60

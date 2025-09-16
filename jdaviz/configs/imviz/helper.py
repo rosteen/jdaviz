@@ -4,21 +4,46 @@ import warnings
 from copy import deepcopy
 
 import numpy as np
+from astropy.io import fits
 from astropy.utils import deprecated
 from glue.core.link_helpers import LinkSame
 
-from jdaviz.core.events import SnackbarMessage, NewViewerMessage
+from jdaviz.core.events import NewViewerMessage
 from jdaviz.core.helpers import ImageConfigHelper
-from jdaviz.utils import (data_has_valid_wcs, get_wcs_only_layer_labels,
-                          get_reference_image_data, _wcs_only_label)
+from jdaviz.utils import (get_wcs_only_layer_labels,
+                          get_reference_image_data)
+
+try:
+    from roman_datamodels import datamodels as rdd
+except ImportError:
+    HAS_ROMAN_DATAMODELS = False
+else:
+    HAS_ROMAN_DATAMODELS = True
 
 __all__ = ['Imviz']
+
+# temporary implementation of a "current app" feature for imviz,
+# useful for Cobalt dev work until imviz is fully superceded by
+# the current app feature in deconfigged. see:
+# https://github.com/spacetelescope/jdaviz/pull/3632
+global _current_app
+_current_app = None
 
 
 class Imviz(ImageConfigHelper):
     """Imviz Helper class."""
     _default_configuration = 'imviz'
     _default_viewer_reference_name = "image-viewer"
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        global _current_app
+        _current_app = self
+
+        # Temporary during deconfig process
+        self.load = self._load
+        self.app.state.dev_loaders = True
 
     def create_image_viewer(self, viewer_name=None):
         """Create a new image viewer.
@@ -71,7 +96,9 @@ class Imviz(ImageConfigHelper):
             raise ValueError(f"Default viewer '{viewer_id}' cannot be destroyed")
         self.app.vue_destroy_viewer_item(viewer_id)
 
-    def load_data(self, data, data_label=None, show_in_viewer=True, **kwargs):
+    @deprecated(since="4.3", alternative="load")
+    def load_data(self, data, data_label=None, show_in_viewer=True,
+                  gwcs_to_fits_sip=False, **kwargs):
         """Load data into Imviz.
 
         Parameters
@@ -109,6 +136,12 @@ class Imviz(ImageConfigHelper):
         show_in_viewer : str or bool
             If `True`, show the data in default viewer.  If a string, show in that viewer.
 
+        gwcs_to_fits_sip : bool, optional
+            Try to convert GWCS coordinates into an approximate FITS SIP solution. Typical
+            precision loss due to this approximation is of order 0.1 pixels. This may
+            improve image rendering performance for images with expensive GWCS
+            transformations. (Default: False)
+
         kwargs : dict
             Extra keywords to be passed into app-level parser.
             The only one you might call directly here is ``ext`` (any FITS
@@ -124,33 +157,36 @@ class Imviz(ImageConfigHelper):
         image as Numpy array and load the latter instead.
 
         """
-        prev_data_labels = self.app.data_collection.labels
+        extensions = kwargs.pop('ext', None)
 
-        if isinstance(data, str):
-            filelist = data.split(',')
+        if isinstance(data, str) and "," in data:
+            data = data.split(',')
 
-            if len(filelist) > 1 and data_label:
+        if isinstance(data, (tuple, list)) and not isinstance(data, fits.HDUList):
+            if len(data) > 1 and data_label:
                 raise ValueError('Do not manually overwrite data_label for '
                                  'a list of images')
+            with self.batch_load():
+                for data_i in data:
+                    kw = deepcopy(kwargs)
+                    self.load_data(data_i,
+                                   data_label=data_label,
+                                   show_in_viewer=show_in_viewer,
+                                   gwcs_to_fits_sip=gwcs_to_fits_sip,
+                                   **kw)
+            return
 
-            for data in filelist:
-                kw = deepcopy(kwargs)
-                filepath, ext, cur_data_label = split_filename_with_fits_ext(data)
+        if isinstance(show_in_viewer, str):
+            viewer = [show_in_viewer]
+        elif isinstance(show_in_viewer, bool):
+            viewer = '*' if show_in_viewer else []
+        else:
+            raise TypeError('show_in_viewer must be a bool or str')
 
-                # This, if valid, will overwrite input.
-                if ext is not None:
-                    kw['ext'] = ext
-
-                # This will only overwrite if not provided.
-                if not data_label:
-                    kw['data_label'] = None
-                else:
-                    kw['data_label'] = data_label
-                self.app.load_data(filepath, parser_reference='imviz-data-parser', **kw)
-
-        elif isinstance(data, np.ndarray) and data.ndim >= 3:
+        if isinstance(data, np.ndarray) and data.ndim >= 3:
             if data.ndim > 3:
                 data = data.squeeze()
+                # in parser, if nddata, return self.input.squeeze()
                 if data.ndim != 3:
                     raise ValueError(f'Imviz cannot load this array with ndim={data.ndim}')
 
@@ -161,68 +197,48 @@ class Imviz(ImageConfigHelper):
                                   'please use Cubeviz')
                     break
 
-                kw = deepcopy(kwargs)
-
-                if data_label:
-                    kw['data_label'] = data_label
-
-                self.app.load_data(data[i, :, :], parser_reference='imviz-data-parser', **kw)
-
+                self._load(data[i, :, :],
+                           format='Image',
+                           data_label=data_label,
+                           extension=extensions,
+                           parent=kwargs.pop('parent', None),
+                           viewer=viewer,
+                           gwcs_to_fits_sip=gwcs_to_fits_sip)
+        elif isinstance(data, str) and data.endswith('.reg'):
+            self._load(data,
+                       format='Subset',
+                       data_label=data_label,
+                       extension=extensions,
+                       parent=kwargs.pop('parent', None),
+                       viewer=viewer,
+                       gwcs_to_fits_sip=gwcs_to_fits_sip)
         else:
-            if data_label:
-                kwargs['data_label'] = data_label
-            self.app.load_data(data, parser_reference='imviz-data-parser', **kwargs)
+            # if the data-label is provided but without an
+            # extension in the label, maintain previous behavior of appending
+            # the extension
+            data_label_as_prefix = (data_label is not None
+                                    and not data_label.endswith(']')
+                                    and getattr(data, 'meta', {}).get('plugin', None) is None)
 
-        # find the current label(s) - TODO: replace this by calling default label functionality
-        # above instead of having to refind it
-        applied_labels = []
-        applied_visible = []
-        layer_is_wcs_only = []
-        layer_has_wcs = []
-        for data in self.app.data_collection:
-            label = data.label
-            if label not in prev_data_labels:
-                applied_labels.append(label)
-                applied_visible.append(True)
-                layer_is_wcs_only.append(data.meta.get(_wcs_only_label, False))
-                layer_has_wcs.append(data_has_valid_wcs(data))
+            # extensions for roman data models cannot be none, so switch default to 'data'
+            if (HAS_ROMAN_DATAMODELS and isinstance(data, (rdd.ImageModel, rdd.DataModel))
+                    and extensions is None):
+                extensions = 'data'
 
-        if show_in_viewer is True:
-            show_in_viewer = f"{self.app.config}-0"
+            if data_label is None:
+                # maintain previous default label behaviors
+                from astropy.nddata import NDData
+                if data.__class__ is NDData:
+                    data_label = 'NDData'
 
-        if show_in_viewer:
-            linked_by_wcs = self.app._align_by == 'wcs'
-            if linked_by_wcs:
-                for applied_label, visible, is_wcs_only, has_wcs in zip(
-                        applied_labels, applied_visible, layer_is_wcs_only, layer_has_wcs
-                ):
-                    if not is_wcs_only and linked_by_wcs and not has_wcs:
-                        self.app.hub.broadcast(SnackbarMessage(
-                            f"'{applied_label}' will be added to the data collection but not "
-                            f"the viewer '{show_in_viewer}', since data are aligned by WCS, but "
-                            f"'{applied_label}' has no WCS.",
-                            color="warning", timeout=8000, sender=self)
-                        )
-
-        if self._in_batch_load and show_in_viewer:
-            for applied_label, is_wcs_only in zip(applied_labels, layer_is_wcs_only):
-                if not is_wcs_only:
-                    self._delayed_show_in_viewer_labels[applied_label] = show_in_viewer
-
-        else:
-            if 'Orientation' not in self.plugins.keys():
-                # otherwise plugin will handle linking automatically with DataCollectionAddMessage
-                self.link_data(align_by='wcs')
-
-            # One input might load into multiple Data objects.
-            # NOTE: If the batch_load context manager was used, it will
-            # handle that logic instead.
-            if show_in_viewer:
-                for applied_label, visible, has_wcs in zip(
-                        applied_labels, applied_visible, layer_has_wcs
-                ):
-                    if (has_wcs and linked_by_wcs) or not linked_by_wcs:
-                        self.app.add_data_to_viewer(show_in_viewer, applied_label, visible=visible)
+            self._load(data,
+                       format='Image',
+                       data_label=data_label,
+                       data_label_as_prefix=data_label_as_prefix,
+                       extension=extensions,
+                       parent=kwargs.pop('parent', None),
+                       viewer=viewer,
+                       gwcs_to_fits_sip=gwcs_to_fits_sip)
 
     def link_data(self, align_by='pixels', wcs_fallback_scheme=None, wcs_fast_approximation=True):
         """(Re)link loaded data in Imviz with the desired link type.
@@ -337,7 +353,7 @@ class Imviz(ImageConfigHelper):
             Provide a label to retrieve a specific data set from data_collection.
         spatial_subset : str, optional
             Spatial subset applied to data.
-        cls : `~specutils.Spectrum1D`, `~astropy.nddata.CCDData`, optional
+        cls : `~specutils.Spectrum`, `~astropy.nddata.CCDData`, optional
             The type that data will be returned as.
 
         Returns

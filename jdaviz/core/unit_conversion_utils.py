@@ -2,6 +2,7 @@ from collections.abc import Iterable
 import itertools
 
 from astropy import units as u
+from specutils import Spectrum
 import numpy as np
 
 from jdaviz.core.custom_units_and_equivs import (PIX2,
@@ -11,13 +12,15 @@ from jdaviz.core.custom_units_and_equivs import (PIX2,
                                                  _spectral_and_photon_flux_density_units)
 
 __all__ = ["all_flux_unit_conversion_equivs", "check_if_unit_is_per_solid_angle",
-           "combine_flux_and_angle_units", "convert_integrated_sb_unit",
+           "coerce_unit", "combine_flux_and_angle_units",
+           "convert_integrated_sb_unit",
            "create_equivalent_angle_units_list",
            "create_equivalent_flux_units_list",
            "create_equivalent_spectral_axis_units_list",
            "flux_conversion_general", "handle_squared_flux_unit_conversions",
            "supported_sq_angle_units", "spectral_axis_conversion",
-           "units_to_strings"]
+           "units_to_strings", "flux_to_sb_unit", "to_flux_density_unit",
+           "spectrum_ensure_flux_density_unit"]
 
 
 def all_flux_unit_conversion_equivs(pixar_sr=None, cube_wave=None):
@@ -72,7 +75,7 @@ def viewer_flux_conversion_equivalencies(values, spec):
     ----------
     values : array-like
         The values to be converted, which may represent flux or surface brightness.
-    spec : Spectrum1D
+    spec : Spectrum
 
     Returns:
     -------
@@ -81,15 +84,14 @@ def viewer_flux_conversion_equivalencies(values, spec):
     """
 
     # if we are converting only 2 values, assume it is a viewer y limits case.
-    is_viewer_limits = len(values) == 2
+    is_viewer_limits = not np.isscalar(values) and len(values) == 2
 
-    # for viewer limits case, use only the 0th spectral axis value for spectral_density
     spectral_values = spec.spectral_axis
-    if not np.isscalar(values) and is_viewer_limits:
+    if is_viewer_limits:
+        # for viewer limits case, use only the 0th spectral axis value for spectral_density
         spectral_values = spectral_values[0]
-
-    # Need this for setting the y-limits but values from viewer might be downscaled
-    if len(values) != spectral_values.size:
+    elif not np.isscalar(values) and len(values) != spectral_values.size:
+        # Need this for setting the y-limits but values from viewer might be downscaled
         spectral_values = spec.spectral_axis[0]
 
     # Next, pixel scale factor
@@ -534,3 +536,127 @@ def convert_integrated_sb_unit(u1, spectral_axis_unit, desired_freq_unit, desire
         return u1  # units are compatible, return input
 
     return uu * spec_axis_conversion_scale_factor
+
+
+def flux_to_sb_unit(flux_unit, angle_unit):
+    if angle_unit not in supported_sq_angle_units(as_strings=True):
+        sb_unit = flux_unit
+    else:
+        # str > unit > str to remove formatting inconsistencies with
+        # parentheses/order of units/etc
+        sb_unit = (u.Unit(flux_unit) / u.Unit(angle_unit)).to_string()
+    return sb_unit
+
+
+def to_flux_density_unit(input_unit, pixar_sr=1.0):
+    """
+    Convert input unit to flux density unit.
+
+    Parameters
+    ----------
+    input_unit : astropy.units.Unit
+        Input unit that could be either surface brightness or flux
+    pixar_sr : float, optional
+        Pixel scale factor in steradians, used for pixel-based surface brightness units
+
+    Returns
+    -------
+    astropy.units.Unit
+        Flux density unit
+    """
+    # If already spectral flux density, return as-is
+    if input_unit.physical_type == 'spectral flux density':
+        return input_unit
+
+    # If it's surface brightness, convert to flux density
+    elif input_unit.physical_type == 'surface brightness':
+        # Extract the angle/pixel unit from the surface brightness unit
+        angle_unit = check_if_unit_is_per_solid_angle(input_unit, return_unit=True)
+
+        # Use pixar_sr for pixel-based units, otherwise use the extracted angle unit
+        if angle_unit == PIX2:
+            return input_unit * pixar_sr * u.sr
+        elif angle_unit is not None:
+            return input_unit * angle_unit
+        else:
+            # Fallback to steradian if no angle unit found
+            return input_unit * u.sr
+
+    # If it's a general flux unit, check if it can be converted to spectral flux density
+    elif input_unit.physical_type == 'flux':
+        # Check if it's already equivalent to spectral flux density units
+        # (some flux units might have physical_type='flux' but are actually spectral flux density)
+        try:
+            # Try to see if it's equivalent to a known spectral flux density unit
+            if input_unit.is_equivalent(u.Jy, u.spectral_density(1*u.m)):
+                return input_unit  # It's already a spectral flux density unit
+            else:
+                # It's a non-spectral flux unit, can't convert without more info
+                raise ValueError(f"Cannot convert flux unit {input_unit} to spectral flux density "
+                                 "without spectral axis information")
+        except Exception:
+            # If equivalency check fails, assume it needs spectral conversion
+            raise ValueError(f"Cannot convert flux unit {input_unit} to spectral flux density "
+                             "without spectral axis information")
+
+    else:
+        # Unknown physical type
+        raise ValueError(f"Cannot convert unit {input_unit} with physical type "
+                         f"'{input_unit.physical_type}' to spectral flux density")
+
+
+def spectrum_ensure_flux_density_unit(spectrum):
+    if (spectrum.flux.unit.physical_type == 'spectral flux density'
+            or spectrum.flux.unit.is_equivalent(u.Jy, u.spectral_density(1*u.m))):
+        return spectrum
+
+    elif spectrum.flux.unit.physical_type in ('surface brightness', 'flux'):
+        pixar_sr = getattr(spectrum, 'meta', {}).get('PIXAR_SR', 1.0)
+        flux_unit = u.Unit(to_flux_density_unit(spectrum.flux.unit, pixar_sr))
+
+        # Handle uncertainty conversion based on type
+        if spectrum.uncertainty is not None:
+            if hasattr(spectrum.uncertainty, 'quantity'):
+                # StdDevUncertainty or similar - use quantity for proper unit handling
+                # Preserve the original uncertainty class
+                uncertainty_class = spectrum.uncertainty.__class__
+                new_uncertainty = uncertainty_class(spectrum.uncertainty.quantity.value * flux_unit)
+            else:
+                # Simple array-like uncertainty
+                new_uncertainty = spectrum.uncertainty.value * flux_unit
+        else:
+            new_uncertainty = None
+
+        return Spectrum(
+            spectral_axis=spectrum.spectral_axis,
+            flux=spectrum.flux.value * flux_unit,
+            uncertainty=new_uncertainty,
+            mask=spectrum.mask,
+            meta=spectrum.meta
+        )
+    else:
+        return NotImplementedError(f"Cannot convert from {spectrum.flux.unit} to flux density")
+
+
+def coerce_unit(quantity):
+    """
+    coerce the unit on a quantity to have a single length unit (will take the first length
+    unit with a power of 1) and to strip any constants from the units.
+    """
+    # for some reason, quantity.unit.powers gives floats which then raise an error in
+    # quantity.to and we want to avoid casting to integer in case of fractional powers
+    unit = u.Unit(str(quantity.unit))
+    unit_types = [str(subunit.physical_type) for subunit in unit.bases]
+    length_inds = [ind for ind, (base, power, unit_type)
+                   in enumerate(zip(unit.bases, unit.powers, unit_types))
+                   if unit_type == 'length' and abs(power) == 1]
+    # we want to force all length units (not area) to use the same base unit so they can
+    # combine/cancel appropriately
+    coerced_bases = [unit.bases[i if i not in length_inds else length_inds[0]]
+                     for i in range(len(unit.bases))]
+    coerced_unit_string = ' * '.join([f'{base}**{power}'
+                                      for base, power in zip(coerced_bases, unit.powers)])
+    coerced_quantity = quantity.to(coerced_unit_string)
+    if getattr(quantity, 'uncertainty', None) is not None:
+        coerced_quantity.uncertainty = quantity.uncertainty.to(coerced_unit_string)
+    return coerced_quantity

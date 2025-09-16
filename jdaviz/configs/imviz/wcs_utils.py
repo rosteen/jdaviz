@@ -6,6 +6,7 @@
 import base64
 import math
 from io import BytesIO
+import warnings
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -430,7 +431,7 @@ def _prepare_rotated_nddata(real_image_shape, wcs, rotation_angle, refdata_shape
     ndd = NDData(
         data=placeholder_data,
         wcs=new_rotated_wcs,
-        meta={wcs_only_key: True, '_pixel_scales': pixel_scales}
+        meta={wcs_only_key: True, '_pixel_scales': pixel_scales, 'plugin': 'orientation'}
     )
     return ndd
 
@@ -551,7 +552,19 @@ def compute_scale(wcs, fiducial, disp_axis, pscale_ratio=1):
     if spectral and disp_axis is None:  # pragma: no cover
         raise ValueError('If input WCS is spectral, a disp_axis must be given')
 
-    crpix = np.array(wcs.invert(*fiducial))
+    # gwcs will not interally strip units off input if the forward transform
+    # does not use quantities, so they must be removed before checking if points
+    # are in image and computing the inverse
+    if not wcs.forward_transform.uses_quantity and hasattr(fiducial, 'value'):
+        fiducial = fiducial.value
+
+    if wcs.in_image(*fiducial):
+        crpix = np.array(wcs.invert(*fiducial))
+    else:
+        # At this point we know the bounding box is probably defined, so we can
+        # use the central coordinate inside the bounding box
+        warnings.warn("WCS fiducial coordinates not inside bounding box")
+        crpix = np.mean(wcs.pixel_bounds, axis=1)
 
     delta = np.zeros_like(crpix)
     spatial_idx = np.where(np.array(wcs.output_frame.axes_type) == 'SPATIAL')[0]

@@ -5,18 +5,25 @@ import threading
 import warnings
 from collections import deque
 from urllib.parse import urlparse
+import fnmatch
+import re
 
 import asdf
 import numpy as np
 from astropy.io import fits
 from astropy.utils import minversion
 from astropy.utils.data import download_file
+from astropy.wcs import WCS
 from astropy.wcs.wcsapi import BaseHighLevelWCS
 from astroquery.mast import Observations, conf
+from gwcs import WCS as gwcs
+from gwcs.coordinate_frames import CompositeFrame, SpectralFrame
 from matplotlib import colors as mpl_colors
 import matplotlib.cm as cm
 from photutils.utils import make_random_cmap
 from regions import CirclePixelRegion, CircleAnnulusPixelRegion
+from specutils.utils.wcs_utils import SpectralGWCS
+import stdatamodels
 
 from glue.config import settings
 from glue.config import colormaps as glue_colormaps
@@ -29,17 +36,24 @@ from ipyvue import watch
 
 __all__ = ['SnackbarQueue', 'enable_hot_reloading', 'bqplot_clear_figure',
            'standardize_metadata', 'ColorCycler', 'alpha_index',
-           'get_subset_type', 'download_uri_to_path', 'layer_is_2d',
+           'get_subset_type', 'cached_uri', 'download_uri_to_path', 'layer_is_2d',
            'layer_is_2d_or_3d', 'layer_is_image_data', 'layer_is_wcs_only',
            'get_wcs_only_layer_labels', 'get_top_layer_index',
            'get_reference_image_data', 'standardize_roman_metadata',
-           'cmap_samples', 'glue_colormaps']
+           'wildcard_match', 'cmap_samples', 'glue_colormaps']
 
 NUMPY_LT_2_0 = not minversion("numpy", "2.0.dev")
+STDATAMODELS_LT_402 = not minversion(stdatamodels, "4.0.2.dev")
 
 # For Metadata Viewer plugin internal use only.
 PRIHDR_KEY = '_primary_header'
 COMMENTCARD_KEY = '_fits_comment_card'
+
+CONFIGS_WITH_LOADERS = ('deconfigged', 'lcviz', 'specviz', 'specviz2d', 'imviz')
+SPECTRAL_AXIS_COMP_LABELS = ('Wavelength', 'Wave', 'Frequency', 'Energy',
+                             'Velocity', 'Wavenumber',
+                             'World 0', 'World 1',
+                             'Pixel Axis 0 [x]', 'Pixel Axis 1 [x]')
 
 
 class SnackbarQueue:
@@ -64,7 +78,8 @@ class SnackbarQueue:
         if not msg.loading and history and logger_plg is not None:
             now = time.localtime()
             timestamp = f'{now.tm_hour}:{now.tm_min:02d}:{now.tm_sec:02d}'
-            new_history = {'time': timestamp, 'text': msg.text, 'color': msg.color}
+            new_history = {'time': timestamp, 'text': msg.text,
+                           'color': msg.color, 'traceback': msg.traceback}
             # for now, we'll hardcode the max length of the stored history
             if len(logger_plg.history) >= 50:
                 logger_plg.history = logger_plg.history[1:] + [new_history]
@@ -239,6 +254,30 @@ def alpha_index(index):
     else:
         # aa-zz (26-701), then overflow strings like '{a'
         return chr(97 + index//26 - 1) + chr(97 + index % 26)
+
+
+def _try_gwcs_to_fits_sip(gw):
+    """
+    Try to convert this GWCS to FITS SIP. Some GWCS models
+    cannot be converted to FITS SIP. In that case, a warning
+    is raised and the GWCS is used, as is.
+    """
+    if isinstance(gw, gwcs):
+        try:
+            result = WCS(gw.to_fits_sip(), relax=True)
+
+        except ValueError as err:
+            warnings.warn(
+                "The GWCS coordinates could not be simplified to "
+                "a SIP-based FITS WCS, the following error was "
+                f"raised: {err}",
+                UserWarning
+            )
+            result = gw
+    else:
+        result = gw
+
+    return result
 
 
 def data_has_valid_wcs(data, ndim=None):
@@ -480,6 +519,17 @@ def get_subset_type(subset):
                 # subset type:
                 continue
 
+            # check for spectral coordinate in GWCS by looking for SpectralFrame
+            if isinstance(ss_data.coords, gwcs):
+                if isinstance(ss_data.coords, (SpectralFrame, SpectralGWCS)):
+                    return 'spectral'
+                elif isinstance(ss_data.coords, CompositeFrame):
+                    if np.any([isinstance(frame, SpectralFrame) for frame in
+                               ss_data.coords.output_frame.frames]):
+                        return 'spectral'
+                else:
+                    continue
+
             # check for a spectral coordinate in FITS WCS:
             wcs_coords = (
                 ss_data.coords.wcs.ctype if hasattr(ss_data.coords, 'wcs')
@@ -490,7 +540,7 @@ def get_subset_type(subset):
                 any(str(coord).startswith('WAVE') for coord in wcs_coords) or
 
                 # also check for a spectral coordinate from the glue_astronomy translator:
-                isinstance(ss_data.coords, SpectralCoordinates)
+                isinstance(ss_data.coords, (SpectralCoordinates, SpectralGWCS))
             )
 
             if has_spectral_coords:
@@ -544,8 +594,7 @@ class MultiMaskSubsetState(SubsetState):
         return cls(masks=masks)
 
 
-def get_cloud_fits(possible_uri, ext=None, cache=None, local_path=os.curdir, timeout=None,
-                   dryrun=False):
+def get_cloud_fits(possible_uri, ext=None):
     """
     Retrieve and open a FITS file from an S3 URI using fsspec. Return the input
     unchanged if it is not an S3 URI.
@@ -565,10 +614,6 @@ def get_cloud_fits(possible_uri, ext=None, cache=None, local_path=os.curdir, tim
         Extension(s) to load from the FITS file. Can be an integer index (e.g., 0),
         a string name (e.g., "SCI"), or a list of such values. If `None`, all extensions
         are loaded.
-    cache : None, bool, or str, optional
-    local_path : str, optional
-    timeout : float, optional
-    dryrun : bool, optional
 
     Returns
     -------
@@ -580,24 +625,34 @@ def get_cloud_fits(possible_uri, ext=None, cache=None, local_path=os.curdir, tim
     parsed_uri = urlparse(possible_uri)
 
     # TODO: Add caching logic
-    if parsed_uri.scheme.lower() == 's3':
-        downloaded_hdus = []
-        # this loads the requested extensions into local memory:
-        with fits.open(possible_uri, fsspec_kwargs={"anon": True}) as hdul:
-            if ext is None:
-                ext_list = list(range(len(hdul)))
-            elif not isinstance(ext, list):
-                ext_list = [ext]
-            else:
-                ext_list = ext
-            for extension in ext_list:
-                hdu_obj = hdul[extension]
-                downloaded_hdus.append(hdu_obj.copy())
+    if not parsed_uri.scheme.lower() == 's3':
+        raise ValueError("Not an S3 URI: {}".format(possible_uri))
+
+    downloaded_hdus = []
+    # this loads the requested extensions into local memory:
+    with fits.open(possible_uri, fsspec_kwargs={"anon": True}) as hdul:
+        if ext is None:
+            ext_list = list(range(len(hdul)))
+        elif not isinstance(ext, list):
+            ext_list = [ext]
+        else:
+            ext_list = ext
+        for extension in ext_list:
+            hdu_obj = hdul[extension]
+            downloaded_hdus.append(hdu_obj.copy())
 
         file_obj = fits.HDUList(downloaded_hdus)
         return file_obj
-    # not s3 resource, return string as is
-    return possible_uri
+
+
+def cached_uri(uri):
+    # return a filename if it exists in the working directory, otherwise return the URI
+    # this is used in CI tests where the MAST files are downloaded by a separate workflow,
+    # cached, and restored in the tox working directory to avoid downloading them again
+    fname = uri.split(':')[-1].split('/')[-1]
+    if os.path.isfile(fname):
+        return fname
+    return uri
 
 
 def download_uri_to_path(possible_uri, cache=None, local_path=os.curdir, timeout=None,
@@ -659,6 +714,7 @@ def download_uri_to_path(possible_uri, cache=None, local_path=os.curdir, timeout
         # avoiding creating local paths in a tmp dir when in standalone:
         local_path = os.path.join(os.environ["JDAVIZ_START_DIR"], local_path)
 
+    timeout = int(timeout) if timeout is not None else timeout
     parsed_uri = urlparse(possible_uri)
 
     cache_none_msg = (
@@ -742,6 +798,11 @@ def layer_is_2d(layer):
     return isinstance(layer, BaseData) and layer.ndim == 2
 
 
+def layer_is_3d(layer):
+    # returns True for subclasses of BaseData with ndim=3:
+    return isinstance(layer, BaseData) and layer.ndim == 3
+
+
 def layer_is_2d_or_3d(layer):
     return isinstance(layer, BaseData) and layer.ndim in (2, 3)
 
@@ -757,6 +818,14 @@ def layer_is_wcs_only(layer):
 def get_wcs_only_layer_labels(app):
     return [data.label for data in app.data_collection
             if layer_is_wcs_only(data)]
+
+
+def wcs_is_spectral(wcs):
+    if wcs is None:
+        return False
+    # NOTE: this may need further generalization for the GWCS but non-specutils case
+    # or for the spectral cube case
+    return isinstance(wcs, SpectralGWCS) or getattr(wcs, 'has_spectral', False)
 
 
 def get_top_layer_index(viewer):
@@ -788,7 +857,10 @@ def get_reference_image_data(app, viewer_id=None):
     By default, the first viewer is used.
     """
     if viewer_id is None:
-        refdata = app._jdaviz_helper.default_viewer._obj.state.reference_data
+        if len(image_viewers := app.get_viewers_of_cls('ImvizImageView')) > 0:
+            refdata = image_viewers[0].state.reference_data
+        else:
+            refdata = None
     else:
         viewer = app.get_viewer_by_id(viewer_id)
         refdata = viewer.state.reference_data
@@ -798,6 +870,87 @@ def get_reference_image_data(app, viewer_id=None):
         return refdata, iref
 
     return None, -1
+
+
+def escape_brackets(s):
+    # Replace [ with [[] and ] with []]
+    return re.sub(r'([\[\]])', r'[\1]', s)
+
+
+def has_wildcard(s):
+    """Check if the string contains any shell-style wildcards: * or ?."""
+    return bool(re.search(r'[\*\?]', s))
+
+
+def wildcard_match(obj, value, choices=None):
+    """
+    Wrapper that handles both single string and list/tuple of strings as inputs for ``value``.
+
+    Returns a list of strings from ``obj.choices`` that match the wildcard pattern(s)
+    in ``value``. If no matches are found, returns a list containing ``value`` itself.
+
+    .. note::
+       ``fnmatch`` provides support for all Unix style wildcards including ``*``, ``?``.
+       We do not check for '[seq]`` and '[!seq]' because image extensions as we handle them
+       contain brackets.
+
+    Parameters
+    ----------
+    obj : object
+        An object with attributes ``choices`` and potentially ``multiselect``.
+
+    value : str or list or tuple
+        A string or list/tuple of strings to match against choices.
+        Each string may contain Unix shell-style wildcards.
+
+    choices : list of str, optional
+        A list of strings to match against. If not provided,
+        ``obj.choices`` will be used.
+
+    Returns
+    -------
+    list of str
+        A list of matched strings or ``value``/``[value]`` if no matches found.
+    """
+    def wildcard_match_str(internal_choices, internal_value):
+        # Assume we want to escape brackets as in the case of images with
+        # multiple extensions
+        internal_value = escape_brackets(internal_value)
+        matched = fnmatch.filter(internal_choices, internal_value)
+        if len(matched) == 0:
+            matched = [internal_value]
+        return matched
+
+    def wildcard_match_list_of_str(internal_choices, internal_value):
+        matched = []
+        for v in internal_value:
+            if isinstance(v, str) and any(has_wildcard(v) for v in value):
+                # Check for wildcard matches
+                matched.extend(wildcard_match_str(internal_choices, v))
+            else:
+                # Append as-is
+                matched.append(v)
+
+        # Remove duplicates while preserving order
+        return list(dict.fromkeys(matched))
+
+    if not choices:
+        choices = getattr(obj, 'choices', None)
+        if not choices:
+            return value
+
+    # any works for both str and iterable
+    if (getattr(obj, 'allow_multiselect', False)
+            and any(has_wildcard(v) for v in value if isinstance(v, str))):
+        if isinstance(value, str):
+            obj.multiselect = True
+            value = wildcard_match_str(choices, value)
+
+        elif isinstance(value, (list, tuple)):
+            obj.multiselect = True
+            value = wildcard_match_list_of_str(choices, value)
+
+    return value
 
 
 # Add new and inverse colormaps to Glue global state. Also see ColormapRegistry in

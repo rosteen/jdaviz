@@ -3,9 +3,11 @@ import numpy as np
 from copy import deepcopy
 
 import astropy.units as u
-from specutils import Spectrum1D
+from astropy.modeling import fitting
+from specutils import Spectrum
+from specutils.fitting import fit_lines
 from specutils.utils import QuantityModel
-from traitlets import Bool, List, Unicode, observe
+from traitlets import Bool, List, Dict, Any, Unicode, observe
 
 from jdaviz.configs.default.plugins.model_fitting.fitting_backend import fit_model_to_spectrum
 from jdaviz.configs.default.plugins.model_fitting.initializers import (MODELS,
@@ -91,6 +93,7 @@ class ModelFitting(PluginTemplateMixin, DatasetSelectMixin,
     model_comp_items = List().tag(sync=True)
     model_comp_selected = Unicode().tag(sync=True)
     poly_order = IntHandleEmpty(0).tag(sync=True)
+    poly_order_invalid_msg = Unicode().tag(sync=True)
 
     comp_label = Unicode().tag(sync=True)
     comp_label_default = Unicode().tag(sync=True)
@@ -115,6 +118,12 @@ class ModelFitting(PluginTemplateMixin, DatasetSelectMixin,
     residuals_label_auto = Bool(True).tag(sync=True)
     residuals_label_invalid_msg = Unicode('').tag(sync=True)
 
+    # fitter options
+    fitter_items = List().tag(sync=True)
+    fitter_selected = Unicode().tag(sync=True)
+    fitter_parameters = Dict().tag(sync=True)
+    fitter_error = Any().tag(sync=True)
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -138,6 +147,30 @@ class ModelFitting(PluginTemplateMixin, DatasetSelectMixin,
                                                      items='model_comp_items',
                                                      selected='model_comp_selected',
                                                      manual_options=list(MODELS.keys()))
+
+        # All possible fitter options available with parameters for each.
+        # Parameters with type 'init' are used on initialization and ones
+        # with type 'call' are used on call.
+        self.all_fitters = {
+            'TRFLSQFitter': {'parameters': [{'name': 'maxiter', 'value': 100, 'type': 'call'},
+                                            {'name': 'filter_non_finite', 'value': True, 'type': 'call'},  # noqa
+                                            {'name': 'calc_uncertainties', 'value': True, 'type': 'init'}]},  # noqa
+            'DogBoxLSQFitter': {'parameters': [{'name': 'maxiter', 'value': 100, 'type': 'call'},
+                                               {'name': 'filter_non_finite', 'value': True, 'type': 'call'},  # noqa
+                                               {'name': 'calc_uncertainties', 'value': True, 'type': 'init'}]},  # noqa
+            'LMLSQFitter': {'parameters': [{'name': 'maxiter', 'value': 100, 'type': 'call'},
+                                           {'name': 'filter_non_finite', 'value': True, 'type': 'call'},  # noqa
+                                           {'name': 'calc_uncertainties', 'value': True, 'type': 'init'}]},  # noqa
+            'LevMarLSQFitter': {'parameters': [{'name': 'maxiter', 'value': 100, 'type': 'call'},
+                                               {'name': 'filter_non_finite', 'value': True, 'type': 'call'},  # noqa
+                                               {'name': 'calc_uncertainties', 'value': True, 'type': 'init'}]},  # noqa
+            'LinearLSQFitter': {'parameters': [{'name': 'calc_uncertainties', 'value': True, 'type': 'init'}]},  # noqa
+            'SLSQPLSQFitter': {'parameters': [{'name': 'maxiter', 'value': 100, 'type': 'call'}]},
+            'SimplexLSQFitter': {'parameters': [{'name': 'maxiter', 'value': 100, 'type': 'call'}]}
+        }
+        self.fitter_component = SelectPluginComponent(self, items='fitter_items',
+                                                      selected='fitter_selected',
+                                                      manual_options=list(self.all_fitters.keys()))
 
         if self.config == 'cubeviz':
             # use mean whenever extracting the 1D spectrum of a cube to initialize model params
@@ -168,16 +201,11 @@ class ModelFitting(PluginTemplateMixin, DatasetSelectMixin,
         self.hub.subscribe(self, GlobalDisplayUnitChanged,
                            handler=self._on_global_display_unit_changed)
 
-        self._set_relevant()
-
-    @observe('dataset_items')
-    def _set_relevant(self, *args):
-        if self.app.config != 'deconfigged':
-            return
-        if not len(self.dataset_items):
-            self.irrelevant_msg = 'No valid datasets loaded'
-        else:
-            self.irrelevant_msg = ''
+        self.parallel_n_cpu = None
+        if self.config == "deconfigged":
+            self.observe_traitlets_for_relevancy(traitlets_to_observe=['dataset_items'])
+        # Update error after all values are initialized
+        self._update_fitter_error()
 
     @property
     def _default_spectrum_viewer_reference_name(self):
@@ -196,14 +224,16 @@ class ModelFitting(PluginTemplateMixin, DatasetSelectMixin,
         expose = ['dataset']
         if self.config == "cubeviz":
             expose += ['cube_fit']
-        expose += ['spectral_subset', 'model_component', 'poly_order', 'model_component_label',
-                   'model_components', 'valid_model_components',
-                   'create_model_component', 'remove_model_component',
-                   'get_model_component', 'set_model_component', 'reestimate_model_parameters',
+        expose += ['spectral_subset', 'model_component',
+                   'poly_order', 'model_component_label', 'model_components',
+                   'valid_model_components', 'create_model_component',
+                   'remove_model_component', 'get_model_component',
+                   'set_model_component', 'reestimate_model_parameters',
                    'equation', 'equation_components',
-                   'add_results', 'residuals_calculate', 'residuals']
+                   'add_results', 'residuals_calculate',
+                   'residuals']
         expose += ['calculate_fit', 'clear_table', 'export_table',
-                   'fitted_models', 'get_models', 'get_model_parameters']
+                   'fitted_models', 'get_models', 'get_model_parameters', 'fitter_component']
         return PluginUserApi(self, expose=expose)
 
     def _param_units(self, param, model_type=None):
@@ -374,7 +404,7 @@ class ModelFitting(PluginTemplateMixin, DatasetSelectMixin,
         if selected_spec is None:
             return
 
-        # Replace NaNs from collapsed Spectrum1D in Cubeviz
+        # Replace NaNs from collapsed Spectrum in Cubeviz
         # (won't affect calculations because these locations are masked)
         selected_spec.flux[np.isnan(selected_spec.flux)] = 0.0
 
@@ -398,6 +428,41 @@ class ModelFitting(PluginTemplateMixin, DatasetSelectMixin,
         self.comp_label_default = self._default_comp_label(self.model_comp_selected,
                                                            self.poly_order)
 
+    @observe('poly_order')
+    def _check_poly_order(self, event={}, model_comp=None, poly_order=None):
+        """
+        Check that the polynomial order is valid if the model component is
+        Polynomial1D.  If not, set the invalid message and return None.
+
+        Parameters
+        ----------
+        event : dict
+            IPyWidget callback event object.
+        model_comp : str
+            Type of model component to check.  If not provided, will default
+            to the object attribute ``model_comp_selected``.
+        poly_order : int
+            Order of the polynomial to check.  If not provided, will default
+            to the object attribute ``poly_order``.
+
+        Returns
+        -------
+        int or None
+            The polynomial order if valid, otherwise None.
+        """
+        self.poly_order_invalid_msg = ""
+
+        model_comp = model_comp if model_comp is not None else self.model_comp_selected
+        if model_comp != 'Polynomial1D':
+            return None
+
+        poly_order = poly_order if poly_order is not None else self.poly_order
+        if not isinstance(poly_order, int) or poly_order < 0:
+            self.poly_order_invalid_msg = "Order must be an integer >= 0"
+            return None
+
+        return poly_order
+
     @observe('comp_label')
     def _comp_label_changed(self, event={}):
         if not len(self.comp_label.strip()):
@@ -408,6 +473,36 @@ class ModelFitting(PluginTemplateMixin, DatasetSelectMixin,
             self.comp_label_invalid_msg = 'label already in use'
             return
         self.comp_label_invalid_msg = ''
+
+    @observe('fitter_selected')
+    def _update_fitter_component_msg(self, event={}):
+        self.fitter_parameters = self.all_fitters[event['new']]
+        self._update_fitter_error()
+
+    @observe('fitter_parameters')
+    def _update_fitter_parameters(self, event={}):
+        # Update values in all_fitters incase user wants to return to a model
+        # they edited previously
+        self.all_fitters[self.fitter_selected] = self.fitter_parameters
+        self._update_fitter_error()
+
+    def _update_fitter_error(self):
+        kw = {param['name']: param['value'] for param in self.fitter_parameters['parameters']
+              if param['type'] == 'call'}
+        init_kw = {param['name']: param['value'] for param in self.fitter_parameters['parameters']
+                   if param['type'] == 'init'}
+
+        # Try to run specutils fit_lines with current values to see if an error appears
+        try:
+            models_to_fit = self._reinitialize_with_fixed()
+            spec = self.dataset.get_selected_spectrum(use_display_units=True)
+            masked_spectrum = self._apply_subset_masks(spec, self.spectral_subset)
+            fitter = getattr(fitting, self.fitter_component.selected)(**init_kw)
+            fit_lines(masked_spectrum, models_to_fit, fitter=fitter, weights=None,
+                      window=None, **kw)
+            self.fitter_error = None
+        except Exception as e:
+            self.fitter_error = str(e)
 
     def _update_model_equation_default(self):
         self.model_equation_default = '+'.join(cm['id'] for cm in self.component_models)
@@ -461,7 +556,10 @@ class ModelFitting(PluginTemplateMixin, DatasetSelectMixin,
 
         if model_comp != "Polynomial1D" and poly_order is not None:
             raise ValueError("poly_order should only be passed if model_component is Polynomial1D")
-        poly_order = poly_order if poly_order is not None else self.poly_order
+
+        poly_order = self._check_poly_order(model_comp=model_comp, poly_order=poly_order)
+        if self.poly_order_invalid_msg:
+            raise ValueError(f"poly_{self.poly_order_invalid_msg.lower()}")
 
         # if model_component was passed and different than the one set in the traitlet, AND
         # model_component_label is not passed, AND the auto is enabled on the label, then
@@ -485,6 +583,7 @@ class ModelFitting(PluginTemplateMixin, DatasetSelectMixin,
         # update the default label (likely adding the suffix)
         self._update_comp_label_default()
         self._update_model_equation_default()
+        self._update_fitter_error()
 
     def _initialize_model_component(self, model_comp, comp_label, poly_order=None):
         new_model = {"id": comp_label, "model_type": model_comp,
@@ -528,6 +627,7 @@ class ModelFitting(PluginTemplateMixin, DatasetSelectMixin,
                 if default_param.unit != default_units:
                     pixar_sr = self.app.data_collection[0].meta.get('PIXAR_SR', 1)
                     viewer = self.app.get_viewer("spectrum-viewer")
+                    # TODO: I suspect this doesn't actually work, but never gets called -Ricky
                     cube_wave = viewer.slice_value * u.Unit(self.app._get_display_unit('spectral'))
                     equivs = all_flux_unit_conversion_equivs(pixar_sr, cube_wave)
 
@@ -545,42 +645,58 @@ class ModelFitting(PluginTemplateMixin, DatasetSelectMixin,
                 data = self.app.data_collection[self.dataset_selected].get_object(statistic=None)
             else:  # User selected some subset from spectrum viewer, just use original cube
                 data = self.app.data_collection[0].get_object(statistic=None)
-            masked_spectrum = self._apply_subset_masks(data, self.spectral_subset)
+            spatial_axes = [0, 1, 2]
+            spatial_axes.remove(data.spectral_axis_index)
+            masked_spectrum = self._apply_subset_masks(data, self.spectral_subset,
+                                                       spatial_axes=tuple(spatial_axes))
         else:
             masked_spectrum = self._apply_subset_masks(self.dataset.selected_spectrum,
                                                        self.spectral_subset)
+
         mask = masked_spectrum.mask
         if mask is not None:
             if mask.ndim == 3:
-                spectral_mask = mask.all(axis=(0, 1))
+                if masked_spectrum.spectral_axis_index in [2, -1]:
+                    spectral_mask = mask.all(axis=(0, 1))
+                elif masked_spectrum.spectral_axis_index == 0:
+                    spectral_mask = mask.all(axis=(1, 2))
             else:
                 spectral_mask = mask
             init_x = masked_spectrum.spectral_axis[~spectral_mask]
             orig_flux_shape = masked_spectrum.flux.shape
             init_y = masked_spectrum.flux[~mask]
             if mask.ndim == 3:
-                init_y = init_y.reshape(orig_flux_shape[0],
-                                        orig_flux_shape[1],
-                                        len(init_x))
+                if masked_spectrum.spectral_axis_index in [2, -1]:
+                    init_y = init_y.reshape(orig_flux_shape[0],
+                                            orig_flux_shape[1],
+                                            len(init_x))
+                elif masked_spectrum.spectral_axis_index == 0:
+                    init_y = init_y.reshape(len(init_x),
+                                            orig_flux_shape[1],
+                                            orig_flux_shape[2])
         else:
             init_x = masked_spectrum.spectral_axis
             init_y = masked_spectrum.flux
 
-        if init_y.unit != self._units['y']:
+        # do not need to adjust y units if cube_fit is not selected
+        if self.cube_fit and init_y.unit != self._units['y']:
             # equivs for spectral density and flux<>sb
             pixar_sr = masked_spectrum.meta.get('_pixel_scale_factor', 1.0)
-            equivs = all_flux_unit_conversion_equivs(pixar_sr, init_x)
+            equivs = all_flux_unit_conversion_equivs(pixar_sr, init_x.mean())
 
-            init_y = flux_conversion_general([init_y.value],
+            init_y = flux_conversion_general(init_y.value,
                                              init_y.unit,
                                              self._units['y'],
                                              equivs)
+
+        # We need this for models where we average over the spatial axes to initialize
+        spectral_axis_index = masked_spectrum.spectral_axis_index
 
         initialized_model = initialize(
             MODELS[model_comp](name=comp_label,
                                **initial_values,
                                **new_model.get("model_kwargs", {})),
-            init_x, init_y)
+            init_x, init_y, spectral_axis_index=spectral_axis_index)
 
         # need to loop over parameters again as the initializer may have overridden
         # the original default value. However, if we toggled cube_fit, we may need to override
@@ -631,18 +747,63 @@ class ModelFitting(PluginTemplateMixin, DatasetSelectMixin,
             # The units have to be in surface brightness for a cube fit.
             uc = self.app._jdaviz_helper.plugins.get('Unit Conversion', None)
             if uc is None:
-                pass
-            elif self.cube_fit and unit != uc._obj.sb_unit_selected:
-                self._units[axis] = uc._obj.sb_unit_selected
-                self._check_model_component_compat([axis], [u.Unit(uc._obj.sb_unit_selected)])
                 return
-            elif msg.axis == 'flux' and uc._obj.has_sb:
-                unit = u.Unit(self.app._get_display_unit('sb'))
+            if not self.cube_fit:
+                # use spectrum viewer y axis units
+                if hasattr(uc, 'spectral_y_unit'):
+                    # NOTE, spectral_y_unit should probably be set and exposed
+                    # in the unit conversion plugin for specviz2d
+                    # and specviz so this check doesn't have to be done
+                    unit = u.Unit(uc.spectral_y_unit)
+                else:
+                    unit = u.Unit(self.app._get_display_unit('spectral_y'))
+
+            else:
+                if unit != uc._obj.sb_unit_selected:
+                    unit = uc._obj.sb_unit_selected
+                    self._check_model_component_compat([axis], [u.Unit(uc._obj.sb_unit_selected)])
+                    return
+                elif msg.axis == 'flux' and uc._obj.has_sb:
+                    unit = u.Unit(self.app._get_display_unit('sb'))
+
+        if 'x' in self._units and 'y' in self._units:
+            # Not populated yet on startup
+            previous_x = self._units['x']
+            previous_y = self._units['y']
 
         # update internal tracking of current units
         self._units[axis] = str(unit)
 
+        # Update model component values and units
+        for model in self.component_models:
+            # If we're converting between wavelength and frequency, make the user reestimate
+            # parameters for Linear or Polynomial models because there's no equivalency to convert.
+            if (axis == 'x' and 'x' in self._units and not
+                    u.Unit(self._units['x']).is_equivalent(previous_x)):
+                if model['model_type'] in ('Linear1D', 'Polynomial1D'):
+                    model['compat_display_units'] = False
+                    continue
+
+            for param in model['parameters']:
+                current_quant = param['value']*u.Unit(param['unit'])
+                new_quant = None
+                spectral_axis = self.dataset.selected_obj.spectral_axis
+                # Just need a single spectral axis value to enable spectral_density equivalency
+                equivalencies = all_flux_unit_conversion_equivs(cube_wave=spectral_axis[0])
+                if ((axis == 'y' and param['unit'] == previous_y) or
+                        (axis == 'x' and param['unit'] == previous_x)):
+                    new_quant = flux_conversion_general(current_quant.value,
+                                                        current_quant.unit,
+                                                        self._units[axis],
+                                                        equivalencies=equivalencies)  # noqa
+
+                # Some parameters have units that aren't related to x or y
+                if new_quant is not None:
+                    param['value'] = new_quant.value
+                    param['unit'] = str(new_quant.unit)
+
         self._check_model_component_compat([axis], [unit])
+        self._update_initialized_parameters()
 
     def remove_model_component(self, model_component_label):
         """
@@ -1163,17 +1324,24 @@ class ModelFitting(PluginTemplateMixin, DatasetSelectMixin,
         masked_spectrum = self._apply_subset_masks(spec,
                                                    self.spectral_subset)
 
+        kw = {param['name']: param['value'] for param in self.fitter_parameters['parameters']
+              if param['type'] == 'call'}
+        init_kw = {param['name']: param['value'] for param in self.fitter_parameters['parameters']
+                   if param['type'] == 'init'}
         try:
             fitted_model, fitted_spectrum = fit_model_to_spectrum(
                 masked_spectrum,
                 models_to_fit,
                 self.model_equation,
+                fitter=getattr(fitting, self.fitter_component.selected)(**init_kw),
                 run_fitter=True,
-                window=None
+                window=None,
+                n_cpu=self.parallel_n_cpu,
+                **kw
             )
-        except AttributeError:
+        except AttributeError as e:
             msg = SnackbarMessage("Unable to fit: model equation may be invalid",
-                                  color="error", sender=self)
+                                  color="error", sender=self, traceback=e)
             self.hub.broadcast(msg)
             return
 
@@ -1186,13 +1354,15 @@ class ModelFitting(PluginTemplateMixin, DatasetSelectMixin,
 
         if add_data:
             self._fitted_models[self.results_label] = fitted_model
-            self.add_results.add_results_from_plugin(fitted_spectrum)
+            self.add_results.add_results_from_plugin(fitted_spectrum,
+                                                     format='1D Spectrum')
 
             if self.residuals_calculate:
                 # NOTE: this will NOT load into the viewer since we have already called
                 # add_results_from_plugin above.
                 self.add_results.add_results_from_plugin(masked_spectrum-fitted_spectrum,
                                                          label=self.residuals.value,
+                                                         format='1D Spectrum',
                                                          replace=False)
 
         self._set_default_results_label()
@@ -1235,14 +1405,17 @@ class ModelFitting(PluginTemplateMixin, DatasetSelectMixin,
         if "_orig_spec" in data.meta:
             spec = data.meta["_orig_spec"]
         else:
-            spec = data.get_object(cls=Spectrum1D, statistic=None)
+            spec = data.get_object(cls=Spectrum, statistic=None)
+
+        spatial_axes = [0, 1, 2]
+        spatial_axes.remove(spec.spectral_axis_index)
 
         sb_unit = self.app._get_display_unit('sb')
         if spec.flux.unit != sb_unit:
             # ensure specutils has access to jdaviz custom unit equivalencies
             pixar_sr = spec.meta.get('_pixel_scale_factor', None)
             equivalencies = all_flux_unit_conversion_equivs(pixar_sr=pixar_sr,
-                                                            cube_wave=spec.spectral_axis)
+                                                            cube_wave=spec.spectral_axis.mean())
 
             pix2_in_flux = 'pix2' in spec.flux.unit.to_string()
             pix2_in_sb = 'pix2' in sb_unit
@@ -1266,7 +1439,7 @@ class ModelFitting(PluginTemplateMixin, DatasetSelectMixin,
         models_to_fit = self._reinitialize_with_fixed()
 
         # Apply masks from selected spectral subset
-        spec = self._apply_subset_masks(spec, self.spectral_subset)
+        spec = self._apply_subset_masks(spec, self.spectral_subset, spatial_axes=spatial_axes)
         # Also mask out NaNs for fitting. Simply adding filter_non_finite to the cube fit
         # didn't work out of the box, so doing this for now.
         if spec.mask is None:
@@ -1274,18 +1447,25 @@ class ModelFitting(PluginTemplateMixin, DatasetSelectMixin,
         else:
             spec.mask = spec.mask | np.isnan(spec.flux)
 
+        kw = {param['name']: param['value'] for param in self.fitter_parameters['parameters']
+              if param['type'] == 'call'}
+        init_kw = {param['name']: param['value'] for param in self.fitter_parameters['parameters']
+                   if param['type'] == 'init'}
         try:
             fitted_model, fitted_spectrum = fit_model_to_spectrum(
                 spec,
                 models_to_fit,
                 self.model_equation,
+                fitter=getattr(fitting, self.fitter_component.selected)(**init_kw),
                 run_fitter=True,
-                window=None
+                window=None,
+                n_cpu=self.parallel_n_cpu,
+                **kw
             )
-        except ValueError:
+        except ValueError as e:
             snackbar_message = SnackbarMessage(
                 "Cube fitting failed",
-                color='error', loading=False, sender=self)
+                color='error', loading=False, sender=self, traceback=e)
             self.hub.broadcast(snackbar_message)
             raise
 
@@ -1296,7 +1476,7 @@ class ModelFitting(PluginTemplateMixin, DatasetSelectMixin,
                 temp_label = "{} ({}, {})".format(self.results_label, m["x"], m["y"])
                 self._fitted_models[temp_label] = m["model"]
 
-        output_cube = Spectrum1D(flux=fitted_spectrum.flux, wcs=fitted_spectrum.wcs)
+        output_cube = Spectrum(flux=fitted_spectrum.flux, wcs=fitted_spectrum.wcs)
 
         selected_spec = self.dataset.selected_obj
         if '_pixel_scale_factor' in selected_spec.meta:
@@ -1314,7 +1494,7 @@ class ModelFitting(PluginTemplateMixin, DatasetSelectMixin,
 
         return fitted_model, output_cube
 
-    def _apply_subset_masks(self, spectrum, subset_component):
+    def _apply_subset_masks(self, spectrum, subset_component, spatial_axes=None):
         """
         For a spectrum/spectral cube ``spectrum``, add a mask attribute
         if none exists. Mask excludes non-selected spectral subsets.
@@ -1332,13 +1512,15 @@ class ModelFitting(PluginTemplateMixin, DatasetSelectMixin,
                     # if subset mask is 3D and the `spectrum` mask is 1D, which
                     # happens when `spectrum` has been collapsed from 3D->1D,
                     # then also collapse the 3D mask in the spatial
-                    # dimensions (0, 1) so that slices in the spectral axis that
+                    # dimensions so that slices in the spectral axis that
                     # are masked in all pixels become masked in the spectral subset:
-                    subset_mask = np.all(subset_mask, axis=(0, 1))
+                    subset_mask = np.all(subset_mask, axis=spatial_axes)
             spectrum.mask |= subset_mask
         else:
             if subset_mask.ndim < spectrum.flux.ndim:
                 # correct the shape of spectral/spatial axes when they're different:
+                if spectrum.spectral_axis_index == 0:
+                    subset_mask = np.expand_dims(subset_mask, (1, 2))
                 subset_mask = np.broadcast_to(subset_mask, spectrum.flux.shape)
 
             elif (subset_mask.ndim == spectrum.flux.ndim and

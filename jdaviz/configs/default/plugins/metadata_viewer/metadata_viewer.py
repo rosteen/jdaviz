@@ -12,7 +12,7 @@ __all__ = ['MetadataViewer']
                category='core', sidebar='info', subtab=0)
 class MetadataViewer(PluginTemplateMixin, DatasetSelectMixin):
     """
-    See the :ref:`Metadata Viewer Plugin Documentation <imviz_metadata-viewer>` for more details.
+    See the :ref:`Metadata Viewer Plugin Documentation <imviz-metadata-viewer>` for more details.
 
     Only the following attributes and methods are available through the
     :ref:`public plugin API <plugin-apis>`:
@@ -46,16 +46,8 @@ class MetadataViewer(PluginTemplateMixin, DatasetSelectMixin):
         # description displayed under plugin title in tray
         self._plugin_description = 'View metadata.'
 
-        self._set_relevant()
-
-    @observe('dataset_items')
-    def _set_relevant(self, *args):
-        if self.app.config != 'deconfigged':
-            return
-        if not len(self.dataset_items):
-            self.irrelevant_msg = 'No data loaded'
-        else:
-            self.irrelevant_msg = ''
+        if self.config == "deconfigged":
+            self.observe_traitlets_for_relevancy(traitlets_to_observe=['dataset_items'])
 
     @property
     def user_api(self):

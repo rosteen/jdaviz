@@ -1,5 +1,5 @@
 from astropy.utils.decorators import deprecated
-from specutils import Spectrum1D
+from specutils import Spectrum
 
 from jdaviz.configs.specviz import Specviz
 
@@ -40,12 +40,12 @@ class Specviz2d(Specviz):
         ----------
         spectrum_2d: str
             A spectrum as translatable container objects (e.g.,
-            ``Spectrum1D``) that can be read by glue-jupyter. Alternatively,
+            ``Spectrum``) that can be read by glue-jupyter. Alternatively,
             can be a string file path.
 
-        spectrum_1d: str or Spectrum1D
+        spectrum_1d: str or Spectrum
             A spectrum as translatable container objects (e.g.,
-            ``Spectrum1D``) that can be read by glue-jupyter. Alternatively,
+            ``Spectrum``) that can be read by glue-jupyter. Alternatively,
             can be a string file path.
 
         spectrum_1d_label : str
@@ -91,6 +91,14 @@ class Specviz2d(Specviz):
         if spectrum_1d_label is None:
             spectrum_1d_label = spectrum_2d_label.replace("2D", "1D")
 
+        load_kwargs = {}
+        if cache is not None:
+            load_kwargs['cache'] = cache
+        if timeout is not None:
+            load_kwargs['timeout'] = timeout
+        if local_path is not None:
+            load_kwargs['local_path'] = local_path
+
         if spectrum_2d is not None:
             if spectrum_2d_label is not None:
                 spectrum_2d_label = self.app.return_unique_name(spectrum_2d_label)
@@ -98,20 +106,16 @@ class Specviz2d(Specviz):
                       data_label=spectrum_2d_label,
                       ext_data_label=spectrum_1d_label,
                       auto_extract=spectrum_1d is None,
-                      show_in_viewer=show_in_viewer,
-                      cache=cache,
-                      local_path=local_path,  # is this implemented by url-resolver?
-                      timeout=timeout,
-                      extension=ext)
+                      viewer='*' if show_in_viewer else [],
+                      extension=ext,
+                      **load_kwargs)
         if spectrum_1d is not None:
             if spectrum_1d_label is not None:
                 spectrum_1d_label = self.app.return_unique_name(spectrum_1d_label)
             self.load(spectrum_1d, format='1D Spectrum',
                       data_label=spectrum_1d_label,
-                      show_in_viewer=show_in_viewer,
-                      cache=cache,
-                      local_path=local_path,  # is this implemented by url-resolver?
-                      timeout=timeout)
+                      viewer='*' if show_in_viewer else [],
+                      **load_kwargs)
 
     @deprecated(since="4.3", alternative="load")
     def load_trace(self, trace, data_label, show_in_viewer=True):
@@ -128,10 +132,10 @@ class Specviz2d(Specviz):
             Whether to load into the spectrum-2d-viewer.
         """
         self.load(trace, format='trace', data_label=data_label,
-                  show_in_viewer=show_in_viewer)
+                  viewer='*' if show_in_viewer else [])
 
     def get_data(self, data_label=None, spectral_subset=None,
-                 cls=Spectrum1D, use_display_units=False):
+                 cls=Spectrum, use_display_units=False):
         """
         Returns data with name equal to data_label of type cls with subsets applied from
         spectral_subset.
@@ -142,7 +146,7 @@ class Specviz2d(Specviz):
             Provide a label to retrieve a specific data set from data_collection.
         spectral_subset : str, optional
             Spectral subset applied to data.
-        cls : `~specutils.Spectrum1D`, `~astropy.nddata.CCDData`, optional
+        cls : `~specutils.Spectrum`, `~astropy.nddata.CCDData`, optional
             The type that data will be returned as.
         use_display_units : bool, optional
             Specify whether the returned data is in native units or the current display units.

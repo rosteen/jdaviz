@@ -1,6 +1,6 @@
 <template>
   <div>
-    <v-row v-if="show_multiselect_toggle && api_hints_enabled && api_hint_multiselect"> 
+    <v-row v-if="show_multiselect_toggle && api_hints_enabled && api_hint_multiselect">
       <span :class="api_hints_enabled && api_hint_multiselect ? 'api-hint' : null">
         {{  api_hint_multiselect }} {{  multiselect ? 'True' : 'False' }}
       </span>

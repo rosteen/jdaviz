@@ -185,32 +185,57 @@ def test_circle_recenter_linking(roi_class, subset_info, imviz_helper, image_2d_
 
 
 @pytest.mark.parametrize(
-    ('spec_regions', 'mode', 'len_subsets', 'len_subregions'),
+    ('spec_regions', 'mode', 'len_subsets', 'len_subregions', 'subset_label'),
     [([SpectralRegion(5.772486091213352 * u.um, 6.052963676101135 * u.um),
        SpectralRegion(6.494371022809778 * u.um, 6.724270682553864 * u.um),
-       SpectralRegion(7.004748267441649 * u.um, 7.3404016303483965 * u.um)], 'new', 3, 1),
+       SpectralRegion(7.004748267441649 * u.um, 7.3404016303483965 * u.um)], 'new', 3, 1,
+     ['Spectral 1', 'Spectral 2', 'Spectral 3']),
      ([SpectralRegion(5.772486091213352 * u.um, 6.052963676101135 * u.um),
        SpectralRegion(6.494371022809778 * u.um, 6.724270682553864 * u.um),
-       SpectralRegion(7.004748267441649 * u.um, 7.3404016303483965 * u.um)], 'replace', 1, 1),
+       SpectralRegion(7.004748267441649 * u.um, 7.3404016303483965 * u.um)], 'replace', 1, 1, None),  # noqa
      ((SpectralRegion(5.772486091213352 * u.um, 6.052963676101135 * u.um) +
        SpectralRegion(6.494371022809778 * u.um, 6.724270682553864 * u.um) +
-       SpectralRegion(7.004748267441649 * u.um, 7.3404016303483965 * u.um)), 'or', 1, 3),
+       SpectralRegion(7.004748267441649 * u.um, 7.3404016303483965 * u.um)), 'or', 1, 3, None),
      ((SpectralRegion(5.772486091213352 * u.um, 6.052963676101135 * u.um) +
        SpectralRegion(5.8 * u.um, 5.9 * u.um) +
        SpectralRegion(6.494371022809778 * u.um, 6.724270682553864 * u.um) +
-       SpectralRegion(7 * u.um, 7.2 * u.um)), ['new', 'andnot', 'or', 'or'], 1, 4),
-     (SpectralRegion(5.8 * u.um, 5.9 * u.um), None, 1, 1)
+       SpectralRegion(7 * u.um, 7.2 * u.um)), ['new', 'andnot', 'or', 'or'], 1, 4, 'Test Combined'),  # noqa
+     (SpectralRegion(5.8 * u.um, 5.9 * u.um), None, 1, 1, 'Test Single')
      ]
 )
 def test_import_spectral_region(cubeviz_helper, spectrum1d_cube, spec_regions, mode, len_subsets,
-                                len_subregions):
+                                len_subregions, subset_label):
     cubeviz_helper.load_data(spectrum1d_cube)
     plg = cubeviz_helper.plugins['Subset Tools']
-    plg.import_region(spec_regions, combination_mode=mode)
+    plg.import_region(spec_regions, combination_mode=mode, subset_label=subset_label)
     subsets = cubeviz_helper.app.get_subsets()
+    print(subsets)
     assert len(subsets) == len_subsets
-    assert len(subsets['Subset 1']) == len_subregions
+    if subset_label is None:
+        subset_label = ['Subset 1']
+    elif isinstance(subset_label, str):
+        subset_label = [subset_label]
+    else:
+        for label in list(subset_label):
+            assert label in subsets
+    assert len(subsets[subset_label[0]]) == len_subregions
     assert cubeviz_helper.app.session.edit_subset_mode.mode == ReplaceMode
+
+
+def test_bad_labels(cubeviz_helper, spectrum1d_cube):
+    spec_regions = [SpectralRegion(5.772486091213352 * u.um, 6.052963676101135 * u.um),
+                    SpectralRegion(6.494371022809778 * u.um, 6.724270682553864 * u.um),
+                    SpectralRegion(7.004748267441649 * u.um, 7.3404016303483965 * u.um)]
+
+    cubeviz_helper.load_data(spectrum1d_cube)
+    plg = cubeviz_helper.plugins['Subset Tools']
+    with pytest.raises(ValueError, match="Each subset label must be unique"):
+        subset_label = ["Test", "Test", "Test"]
+        plg.import_region(spec_regions, combination_mode="new", subset_label=subset_label)
+
+    with pytest.raises(ValueError, match="subset_label contained invalid labels"):
+        subset_label = ["Test", "Subset 2", "Test 2"]
+        plg.import_region(spec_regions, combination_mode="new", subset_label=subset_label)
 
 
 def test_import_spectral_regions_file(cubeviz_helper, spectrum1d_cube, tmp_path):
@@ -250,9 +275,9 @@ def test_import_sky_region_in_cubeviz(cubeviz_helper, spectrum1d_cube):
 
     aperture = CircleSkyRegion(coord, aper_rad)
 
-    status = plg.import_region(aperture, return_bad_regions=True)
+    status = plg.import_region(aperture, return_bad_regions=True, subset_label='Test 1')
     assert status == []
-    assert cubeviz_helper.app.get_subsets('Subset 1')
+    assert cubeviz_helper.app.get_subsets('Test 1')
 
 
 def test_get_regions(cubeviz_helper, spectrum1d_cube, imviz_helper):
@@ -572,3 +597,47 @@ def test_update_subset(cubeviz_helper, spectrum1d_cube):
     assert plg._obj.subset_definitions[0][2]['value'] == 1
     # Check radius
     assert plg._obj.subset_definitions[0][3]['value'] == 1
+
+
+def test_data_menu_subset_delete(cubeviz_helper, spectrum1d_cube):
+    cubeviz_helper.load_data(spectrum1d_cube)
+    dm = cubeviz_helper.viewers['spectrum-viewer'].data_menu
+    plg = cubeviz_helper.plugins['Subset Tools']
+
+    dm.layer.multiselect = False
+
+    # load one spectral region
+    plg.import_region(SpectralRegion(1 * u.um, 1.5 * u.um))
+
+    # load a spatial region
+    spatial_reg = CirclePixelRegion(center=PixCoord(x=2, y=2), radius=2)
+    plg.import_region(spatial_reg, combination_mode='new')
+
+    # load a second spectral region after spatial region
+    plg.import_region(SpectralRegion(1.6 * u.um, 2 * u.um))
+
+    print(cubeviz_helper.app.data_collection)
+    expected_dm_layer_len = 4
+
+    assert (len(cubeviz_helper.viewers['spectrum-viewer'].data_menu.layer.choices) ==
+            expected_dm_layer_len)
+
+    # select the spectral subset created after the spatial subset
+    dm.layer = 'Subset 3'
+    dm.remove_from_app()
+    expected_dm_layer_len = 3
+
+    # ensure removing from app removes it from LayerSelect and is no longer a data label
+    # within the data menu
+    assert (len(cubeviz_helper.viewers['spectrum-viewer'].data_menu.layer.choices) ==
+            expected_dm_layer_len)
+    assert dm.layer not in cubeviz_helper.viewers['spectrum-viewer'].data_menu.data_labels_loaded
+
+    # select the spectral subset created before the spatial subset
+    dm.layer = 'Subset 1'
+    dm.remove_from_app()
+    expected_dm_layer_len = 2
+
+    assert (len(cubeviz_helper.viewers['spectrum-viewer'].data_menu.layer.choices) ==
+            expected_dm_layer_len)
+    assert dm.layer not in cubeviz_helper.viewers['spectrum-viewer'].data_menu.data_labels_loaded

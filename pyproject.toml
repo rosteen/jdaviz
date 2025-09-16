@@ -10,22 +10,22 @@ dependencies = [
     "astropy>=6",
     "matplotlib>=3.6",
     "traitlets>=5.0.5",
-    "bqplot>=0.12.37",
-    "glue-core>=1.22.0",
+    "bqplot>=0.12.45,<0.13",
+    "glue-core>=1.23.0",
     "glue-jupyter>=0.23.0",
-    "echo>=0.5.0",
+    "echo>=0.11.0",
     "ipykernel>=6.19.4",
     "ipyvue>=1.6",
     "ipyvuetify>=1.7.0",
     "ipysplitpanes>=0.1.0",
     "ipygoldenlayout>=0.3.0",
     "ipywidgets>=8.0.6",
-    "solara>=1.40.0",
+    "solara>=1.49.0",
     "pyyaml>=5.4.1",
-    "specutils>=1.18",
-    "specreduce>=1.4.1,!=1.5.0,!=1.5.1",
+    "specutils>=2.0.0",
+    "specreduce>=1.6.0",
     "photutils>=2.2",
-    "glue-astronomy>=0.10",
+    "glue-astronomy>=0.12.0",
     "asteval>=0.9.23",
     "idna",
     "vispy>=0.6.5",
@@ -85,7 +85,7 @@ docs = [
     "sphinx_design"
 ]
 roman = [
-    "roman_datamodels>=0.22.0",
+    "roman_datamodels>=0.26.0",
 ]
 strauss = [
     "strauss",
@@ -127,8 +127,8 @@ jdaviz = [
 
 [tool.pytest.ini_options]
 testpaths = [
-    "\"jdaviz\"",
-    "\"docs\"",
+    "jdaviz",
+    "docs",
 ]
 astropy_header = true
 doctest_plus = "enabled"
@@ -137,29 +137,34 @@ addopts = "--doctest-rst --import-mode=append --ignore-glob='*/jdaviz/qt.py'"
 xfail_strict = true
 filterwarnings = [
     "error",
+    # This line handles the DeprecationWarning from jupyter_core
+    "ignore:Jupyter is migrating its paths.*:DeprecationWarning:jupyter_core.utils",
     "ignore:numpy\\.ufunc size changed:RuntimeWarning",
     "ignore:numpy\\.ndarray size changed:RuntimeWarning",
     "ignore:Passing unrecognized arguments to super:DeprecationWarning",
     "ignore:.*With traitlets 4\\.1, metadata should be set using the \\.tag\\(\\) method:DeprecationWarning",
     "ignore:The unit 'Angstrom' has been deprecated in the VOUnit standard\\. Suggested.* 0\\.1nm\\.",
     "ignore:((.|\n)*)Sentinel is not a public part of the traitlets API((.|\n)*)",
-    "ignore:datetime\\.datetime\\.utcfromtimestamp:DeprecationWarning",  # asdf + dateutil<=2.8.2 + Python 3.12
     "ignore:'audioop' is deprecated and slated for removal in Python 3.13",
-    "ignore:Importing display from IPython.core.display is deprecated since IPython 7.14, please import from IPython.display",
-    "ignore:Parsing dates involving a day of month without a year:DeprecationWarning",  # ipykernel<7
+    "ignore:Parsing dates involving a day of month without a year:DeprecationWarning", # ipykernel<7
     "ignore::DeprecationWarning:glue",
     "ignore::DeprecationWarning:asteval",
     "ignore:::specutils.spectra.spectrum1d",
     "ignore:use_side_effect is deprecated:DeprecationWarning",
+    "ignore:.*is deprecated and will be removed in Pillow 13.*",
+    "ignore:.*The TestRunner class will be deprecated in a future version.*",
+    "ignore:.*The TestRunnerBase class will be deprecated in a future version.*",
     # Ignore numpy 2.0 warning, see https://github.com/astropy/astropy/pull/15495
     # and https://github.com/scipy/scipy/pull/19275
     "ignore:.*numpy\\.core.*:DeprecationWarning",
     "ignore:The load_data function is deprecated.*",
-    "ignore:.*use_side_effect is deprecated.*",
-    "ignore:.*The WCS transformation has more axes.*",
-    "ignore:.*from MJD-BEG.*",
     "ignore:.*Set OBSGEO-L to.*",
+    "ignore:.*path should be string, bytes, os.PathLike or integer, not ndarray",
+    # This warning will not fail in CI, but causes issues running tests locally on Windows so test locally if considering
+    # removing this in the future
+    "ignore:Importing display from IPython.core.display is deprecated since IPython 7.14, please import from IPython.display",
 ]
+
 
 [tool.coverage.run]
 omit = [

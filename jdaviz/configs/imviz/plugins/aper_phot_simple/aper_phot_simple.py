@@ -34,7 +34,8 @@ from jdaviz.utils import PRIHDR_KEY
 __all__ = ['SimpleAperturePhotometry']
 
 
-@tray_registry('imviz-aper-phot-simple', label="Aperture Photometry")
+@tray_registry('imviz-aper-phot-simple', label="Aperture Photometry",
+               category="data:analysis")
 class SimpleAperturePhotometry(PluginTemplateMixin, ApertureSubsetSelectMixin,
                                DatasetMultiSelectMixin, TableMixin, PlotMixin, MultiselectMixin):
     """
@@ -44,11 +45,37 @@ class SimpleAperturePhotometry(PluginTemplateMixin, ApertureSubsetSelectMixin,
     Only the following attributes and methods are available through the
     :ref:`public plugin API <plugin-apis>`:
 
-    * :meth:`~jdaviz.core.template_mixin.PluginTemplateMixin.show`
-    * :meth:`~jdaviz.core.template_mixin.PluginTemplateMixin.open_in_tray`
     * :meth:`~jdaviz.core.template_mixin.PluginTemplateMixin.close_in_tray`
+    * :meth:`~jdaviz.core.template_mixin.PluginTemplateMixin.open_in_tray`
+    * :meth:`~jdaviz.core.template_mixin.PluginTemplateMixin.show`
+    * :meth:`~jdaviz.core.template_mixin.TableMixin.clear_table`
     * :meth:`~jdaviz.core.template_mixin.TableMixin.export_table`
+    * :meth:`calculate_batch_photometry`
+    * :meth:`calculate_photometry`
     * :meth:`fitted_models`
+    * :meth:`fit_radial_profile`
+    * :meth:`unpack_batch_options`
+    * ``aperture`` (:class:`~jdaviz.core.template_mixin.SubsetSelect`):
+    * ``background`` (:class:`~jdaviz.core.template_mixin.SubsetSelect`):
+    * ``background_value``
+      Fixed value to use as background level.
+    * ``counts_factor``
+      Factor to convert data unit to counts, in unit of flux/counts.
+    * ``current_plot_type``
+      Choice of Curve of Growth, Radial Profile, or Radial Profile (Raw).
+      Only applicable when ``multiselect=False``.
+    * ``dataset`` (:class:`~jdaviz.core.template_mixin.DatasetSelect`):
+    * ``flux_scaling``
+      Flux scaling factor for calculation of magnitudes in output table.
+    * ``multiselect``
+      Enable multiselect mode to select multiple datasets for aperture photometry.
+    * ``pixel_area``
+        In arcsec squared, only used if data is in units of surface brightness.
+    * ``plot`` (:class:`~jdaviz.core.template_mixin.Plot`):
+        Plot, based on selection of ``current_plot_type``. Only applicable when
+        ``multiselect=False``
+    * ``table`` (:class:`~jdaviz.core.template_mixin.Table`):
+        Table with photometry results.
     """
     template_file = __file__, "aper_phot_simple.vue"
     uses_active_status = Bool(True).tag(sync=True)
@@ -94,6 +121,8 @@ class SimpleAperturePhotometry(PluginTemplateMixin, ApertureSubsetSelectMixin,
 
         # description displayed under plugin title in tray
         self._plugin_description = 'Perform aperture photometry for drawn regions.'
+
+        self.dataset.add_filter('is_cube_or_image')
 
         self.background = SubsetSelect(self,
                                        'background_items',
@@ -155,16 +184,19 @@ class SimpleAperturePhotometry(PluginTemplateMixin, ApertureSubsetSelectMixin,
             self.hub.subscribe(self, GlobalDisplayUnitChanged,
                                handler=self._on_display_units_changed)
 
+        if self.config == "deconfigged":
+            self.observe_traitlets_for_relevancy(traitlets_to_observe=['dataset_items'])
+
     @property
     def user_api(self):
-        # TODO: expose public API once finalized
-        # expose=('multiselect', 'dataset', 'aperture',
-        #                                   'background', 'background_value',
-        #                                   'pixel_area', 'counts_factor', 'flux_scaling',
-        #                                   'calculate_photometry',
-        #                                   'unpack_batch_options', 'calculate_batch_photometry')
+        expose = ('multiselect', 'dataset', 'aperture', 'background',
+                  'background_value', 'pixel_area', 'counts_factor', 'flux_scaling',
+                  'calculate_photometry', 'unpack_batch_options',
+                  'calculate_batch_photometry', 'table', 'clear_table',
+                  'export_table', 'fitted_models', 'current_plot_type',
+                  'fit_radial_profile', 'plot')
 
-        return PluginUserApi(self, expose=('export_table', 'fitted_models'))
+        return PluginUserApi(self, expose=expose)
 
     @property
     def fitted_models(self):
@@ -181,7 +213,7 @@ class SimpleAperturePhotometry(PluginTemplateMixin, ApertureSubsetSelectMixin,
         if self.config != "cubeviz":
             return
         # self.dataset might not exist when app is setting itself up.
-        if hasattr(self, "dataset"):
+        if hasattr(self, "dataset") and self.dataset.choices != []:
             if isinstance(self.dataset.selected_dc_item, list):
                 datasets = self.dataset.selected_dc_item
             else:
@@ -420,7 +452,8 @@ class SimpleAperturePhotometry(PluginTemplateMixin, ApertureSubsetSelectMixin,
         except Exception as e:
             self.hub.broadcast(SnackbarMessage(
                 f"Failed to extract {self.dataset_selected}: {repr(e)}",
-                color='error', sender=self))
+                color='error', sender=self,
+                traceback=e))
 
         # get correct display unit for newly selected dataset
         if self.config == 'cubeviz':
@@ -480,7 +513,8 @@ class SimpleAperturePhotometry(PluginTemplateMixin, ApertureSubsetSelectMixin,
         except Exception as e:
             self.hub.broadcast(SnackbarMessage(
                 f"Failed to extract {self.aperture_selected}: {repr(e)}",
-                color='error', sender=self))
+                color='error', sender=self,
+                traceback=e))
         else:
             self._background_selected_changed()
 
@@ -502,9 +536,14 @@ class SimpleAperturePhotometry(PluginTemplateMixin, ApertureSubsetSelectMixin,
                 data = self.dataset.selected_dc_item
 
         comp = data.get_component(data.main_components[0])
+        if data.ndim > 2:
+            spectral_axis_index = getattr(data, "meta", {}).get("spectral_axis_index", 0)
 
         if self.config == "cubeviz" and data.ndim > 2:
-            comp_data = comp.data[:, :, self._cubeviz_slice_ind].T  # nx, ny --> ny, nx
+            if spectral_axis_index == 0:
+                comp_data = comp.data[self._cubeviz_slice_ind, :, :]
+            else:
+                comp_data = comp.data[:, :, self._cubeviz_slice_ind].T  # nx, ny --> ny, nx
             # Similar to coords_info logic.
             if '_orig_spec' in getattr(data, 'meta', {}):
                 w = data.meta['_orig_spec'].wcs.celestial
@@ -555,7 +594,9 @@ class SimpleAperturePhotometry(PluginTemplateMixin, ApertureSubsetSelectMixin,
         except Exception as e:
             self.background_value = 0
             self.hub.broadcast(SnackbarMessage(
-                f"Failed to extract {background_selected}: {repr(e)}", color='error', sender=self))
+                f"Failed to extract {background_selected}: {repr(e)}",
+                color='error', sender=self,
+                traceback=e))
 
     @with_spinner()
     def calculate_photometry(self, dataset=None, aperture=None, background=None,
@@ -605,6 +646,12 @@ class SimpleAperturePhotometry(PluginTemplateMixin, ApertureSubsetSelectMixin,
         else:
             # we can use the pre-cached value
             data = self.dataset.selected_dc_item
+
+        if data.ndim > 2:
+            if "spectral_axis_index" in getattr(data, "meta", {}):
+                spectral_axis_index = data.meta["spectral_axis_index"]
+            else:
+                spectral_axis_index = 0
 
         if aperture is not None:
             if aperture not in self.aperture.choices:
@@ -689,7 +736,10 @@ class SimpleAperturePhotometry(PluginTemplateMixin, ApertureSubsetSelectMixin,
             raise ValueError('Missing or invalid background value')
 
         if self.config == "cubeviz" and data.ndim > 2:
-            comp_data = comp.data[:, :, self._cubeviz_slice_ind].T  # nx, ny --> ny, nx
+            if spectral_axis_index == 0:
+                comp_data = comp.data[self._cubeviz_slice_ind, :, :]
+            else:
+                comp_data = comp.data[:, :, self._cubeviz_slice_ind].T  # nx, ny --> ny, nx
             # Similar to coords_info logic.
             if '_orig_spec' in getattr(data, 'meta', {}):
                 w = data.meta['_orig_spec'].wcs
@@ -710,8 +760,11 @@ class SimpleAperturePhotometry(PluginTemplateMixin, ApertureSubsetSelectMixin,
             ycenter = reg.center.y
             if data.coords is not None:
                 if self.config == "cubeviz" and data.ndim > 2:
-                    sky_center = w.pixel_to_world(self._cubeviz_slice_ind,
-                                                  ycenter, xcenter)[1]
+                    if spectral_axis_index == 0:
+                        sky = w.pixel_to_world(xcenter, ycenter, self._cubeviz_slice_ind)
+                    else:
+                        sky = w.pixel_to_world(self._cubeviz_slice_ind, ycenter, xcenter)
+                    sky_center = [coord for coord in sky if hasattr(coord, "icrs")][0]
                 else:  # "imviz"
                     sky_center = w.pixel_to_world(xcenter, ycenter)
             else:
@@ -789,14 +842,18 @@ class SimpleAperturePhotometry(PluginTemplateMixin, ApertureSubsetSelectMixin,
         if include_pixarea_fac:
             # convert pixarea, which is in arcsec2/pix2 to the display solid angle unit / pix2
 
-            if self.config == 'imviz':
+            if self.config in ('imviz', 'deconfigged'):
                 # can remove once unit conversion implemented in imviz and
                 # display_solid_angle_unit traitlet is set, for now it will always be the data units
                 display_solid_angle_unit = check_if_unit_is_per_solid_angle(comp.units,
                                                                             return_unit=True)
 
-            elif self.config == 'cubeviz':
+            elif self.config == "cubeviz":
                 display_solid_angle_unit = u.Unit(self.display_solid_angle_unit)
+
+            else:
+                raise NotImplementedError(
+                    f"Unsupported config {self.config} for aperture photometry.")
 
             # if angle unit is pix2, pixarea should be 1 pixel2 per pixel2
             if display_solid_angle_unit == PIX2:
@@ -1074,7 +1131,9 @@ class SimpleAperturePhotometry(PluginTemplateMixin, ApertureSubsetSelectMixin,
         except Exception as e:  # pragma: no cover
             self.plot.clear_all_marks()
             msg = f"Aperture photometry failed: {repr(e)}"
-            self.hub.broadcast(SnackbarMessage(msg, color='error', sender=self))
+            self.hub.broadcast(SnackbarMessage(msg, color='error',
+                                               sender=self,
+                                               traceback=e))
             self.result_failed_msg = msg
         else:
             self.result_failed_msg = ''

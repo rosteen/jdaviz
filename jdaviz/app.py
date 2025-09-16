@@ -35,8 +35,9 @@ from glue_jupyter.state_traitlets_helpers import GlueState
 from ipypopout import PopoutButton
 from ipyvuetify import VuetifyTemplate
 from ipywidgets import widget_serialization
-from traitlets import Dict, Bool, Unicode, Any
-from specutils import Spectrum1D, SpectralRegion
+from traitlets import Dict, Bool, List, Unicode, Any
+from specutils import Spectrum, SpectralRegion
+from specutils.utils.wcs_utils import SpectralGWCS
 
 from jdaviz import __version__
 from jdaviz import style_registry
@@ -47,12 +48,13 @@ from jdaviz.core.events import (LoadDataMessage, NewViewerMessage, AddDataMessag
                                 ViewerAddedMessage, ViewerRemovedMessage,
                                 ViewerRenamedMessage, ChangeRefDataMessage,
                                 IconsUpdatedMessage)
-from jdaviz.core.registries import (tool_registry, tray_registry, viewer_registry,
+from jdaviz.core.registries import (tool_registry, tray_registry,
+                                    viewer_registry, viewer_creator_registry,
                                     data_parser_registry, loader_resolver_registry)
 from jdaviz.core.tools import ICON_DIR
 from jdaviz.utils import (SnackbarQueue, alpha_index, data_has_valid_wcs,
                           layer_is_table_data, MultiMaskSubsetState,
-                          _wcs_only_label)
+                          _wcs_only_label, CONFIGS_WITH_LOADERS)
 from jdaviz.core.custom_units_and_equivs import SPEC_PHOTON_FLUX_DENSITY_UNITS, enable_spaxel_unit
 from jdaviz.core.unit_conversion_utils import (check_if_unit_is_per_solid_angle,
                                                combine_flux_and_angle_units,
@@ -68,6 +70,10 @@ GoldenLayout()
 
 enable_spaxel_unit()
 
+# This shows up repeatedly when doing many operations, I think it's reasonable to disable it
+warnings.filterwarnings('ignore', message="The unit 'Angstrom' has been deprecated"
+                        "in the VOUnit standard")
+
 CONTAINER_TYPES = dict(row='gl-row', col='gl-col', stack='gl-stack')
 EXT_TYPES = dict(flux=['flux', 'sci'],
                  uncert=['ivar', 'err', 'var', 'uncert'],
@@ -78,7 +84,16 @@ ALL_JDAVIZ_CONFIGS = ['cubeviz', 'specviz', 'specviz2d', 'mosviz', 'imviz']
 @unit_converter('custom-jdaviz')
 class UnitConverterWithSpectral:
     def equivalent_units(self, data, cid, units):
-        if cid.label == "flux":
+        if (getattr(data, '_importer', None) == 'ImageImporter' and
+                u.Unit(data.get_component(cid).units).physical_type == 'surface brightness'):
+            all_flux_units = SPEC_PHOTON_FLUX_DENSITY_UNITS + ['ct']
+            angle_units = supported_sq_angle_units()
+            all_sb_units = combine_flux_and_angle_units(all_flux_units, angle_units)
+
+            list_of_units = set(list(map(str, u.Unit(units).find_equivalent_units(
+                include_prefix_units=True))) + all_flux_units + all_sb_units
+                )
+        elif cid.label in ("flux"):
             eqv = u.spectral_density(1 * u.m)  # Value does not matter here.
             all_flux_units = SPEC_PHOTON_FLUX_DENSITY_UNITS + ['ct']
             angle_units = supported_sq_angle_units()
@@ -107,12 +122,16 @@ class UnitConverterWithSpectral:
             # handle ramps loaded into Rampviz by avoiding conversion
             # of the groups axis:
             return values
-        elif cid.label == "flux":
+        elif (getattr(data, '_importer', None) == 'ImageImporter' and
+              u.Unit(data.get_component(cid).units).physical_type == 'surface brightness'):
+            # handle surface brightness units in image-like data
+            return (values * u.Unit(original_units)).to_value(target_units)
+        elif cid.label in ("flux"):
             try:
-                spec = data.get_object(cls=Spectrum1D)
+                spec = data.get_object(cls=Spectrum)
             except RuntimeError:
                 data = data.get_object(cls=NDDataArray)
-                spec = Spectrum1D(flux=data.data * u.Unit(original_units))
+                spec = Spectrum(flux=data.data * u.Unit(original_units))
             # equivalencies for flux/surface brightness conversions
             viewer_equivs = viewer_flux_conversion_equivalencies(values, spec)
             return flux_conversion_general(values, original_units,
@@ -135,7 +154,9 @@ custom_components = {'j-tooltip': 'components/tooltip.vue',
                      'j-layer-viewer-icon': 'components/layer_viewer_icon.vue',
                      'j-layer-viewer-icon-stylized': 'components/layer_viewer_icon_stylized.vue',
                      'j-loader-panel': 'components/loader_panel.vue',
+                     'j-new-viewer-panel': 'components/new_viewer_panel.vue',
                      'j-loader': 'components/loader.vue',
+                     'j-viewer-creator': 'components/viewer_creator.vue',
                      'j-tray-plugin': 'components/tray_plugin.vue',
                      'j-play-pause-widget': 'components/play_pause_widget.vue',
                      'j-plugin-section-header': 'components/plugin_section_header.vue',
@@ -153,6 +174,7 @@ custom_components = {'j-tooltip': 'components/tooltip.vue',
                      'plugin-dataset-select': 'components/plugin_dataset_select.vue',
                      'plugin-subset-select': 'components/plugin_subset_select.vue',
                      'plugin-viewer-select': 'components/plugin_viewer_select.vue',
+                     'plugin-viewer-create-new': 'components/plugin_viewer_create_new.vue',
                      'plugin-layer-select': 'components/plugin_layer_select.vue',
                      'plugin-layer-select-tabs': 'components/plugin_layer_select_tabs.vue',
                      'plugin-editable-select': 'components/plugin_editable_select.vue',
@@ -173,8 +195,6 @@ custom_components = {'j-tooltip': 'components/tooltip.vue',
                      'data-menu-remove': 'components/data_menu_remove.vue',
                      'data-menu-subset-edit': 'components/data_menu_subset_edit.vue',
                      'hover-api-hint': 'components/hover_api_hint.vue'}
-
-_verbosity_levels = ('debug', 'info', 'warning', 'error')
 
 # Register pure vue component. This allows us to do recursive component instantiation only in the
 # vue component file
@@ -201,11 +221,11 @@ class ApplicationState(State):
     drawer_content = CallbackProperty(
         '', docstring="Content shown in the tray drawer.")
     add_subtab = CallbackProperty(
-        0, docstring="Index of the active add data tab shown in the tray.")
-    viewers_subtab = CallbackProperty(
-        0, docstring="Index of the active viewer tab shown in the viewer area.")
+        0, docstring="Index of the active subtab in the add sidebar.")
+    settings_subtab = CallbackProperty(
+        0, docstring="Index of the active subtab in the settings sidebar.")
     info_subtab = CallbackProperty(
-        0, docstring="Index of the active infotab shown in the viewer area.")
+        0, docstring="Index of the active subtab in the info sidebar.")
     jdaviz_version = CallbackProperty(
         __version__, docstring="Version of Jdaviz.")
     global_search = CallbackProperty(
@@ -265,10 +285,16 @@ class ApplicationState(State):
 
     dev_loaders = CallbackProperty(
         False, docstring='Whether to enable developer mode for new loaders infrastructure')
+    catalogs_in_dc = CallbackProperty(
+        False, docstring="Whether to enable developer mode for adding catalogs to data collection.")
     loader_items = ListCallbackProperty(
         docstring="List of loaders available to the application.")
     loader_selected = CallbackProperty(
-        '', docstring="Index of the active loader tab shown in the tray.")
+        '', docstring="Active loader shown in the loaders panel.")
+    new_viewer_items = ListCallbackProperty(
+        docstring="List of new viewer items available to the application.")
+    new_viewer_selected = CallbackProperty(
+        '', docstring="Active new viewer shown in the new viewers panel.")
 
     data_items = ListCallbackProperty(
         docstring="List of data items parsed from the Glue data collection.")
@@ -314,13 +340,13 @@ class Application(VuetifyTemplate, HubListener):
     docs_link = Unicode("").tag(sync=True)
     popout_button = Any().tag(sync=True, **widget_serialization)
     style_registry_instance = Any().tag(sync=True, **widget_serialization)
+    invisible_children = List(Any()).tag(sync=True, **widget_serialization)
+    golden_layout_state = Dict(default_value=None, allow_none=True).tag(sync=True)
     force_open_about = Bool(False).tag(sync=True)
 
     def __init__(self, configuration=None, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._jdaviz_helper = None
-        self._verbosity = 'warning'
-        self._history_verbosity = 'info'
         self.popout_button = PopoutButton(self)
         self.style_registry_instance = style_registry.get_style_registry()
 
@@ -536,34 +562,6 @@ class Application(VuetifyTemplate, HubListener):
         """
         return self._application_handler.data_collection
 
-    @property
-    def verbosity(self):
-        """
-        Verbosity of the application for popup snackbars, choose from ``'debug'``,
-        ``'info'``, ``'warning'`` (default), or ``'error'``.
-        """
-        return self._verbosity
-
-    @verbosity.setter
-    def verbosity(self, val):
-        if val not in _verbosity_levels:
-            raise ValueError(f'Invalid verbosity: {val}')
-        self._verbosity = val
-
-    @property
-    def history_verbosity(self):
-        """
-        Verbosity of the logger history, choose from ``'debug'``, ``'info'`` (default),
-        ``'warning'``, or ``'error'``.
-        """
-        return self._history_verbosity
-
-    @history_verbosity.setter
-    def history_verbosity(self, val):
-        if val not in _verbosity_levels:
-            raise ValueError(f'Invalid verbosity: {val}')
-        self._history_verbosity = val
-
     def _add_style(self, path):
         """
         Appends an addition vue file containing a <style> tag that will be applied on top of the
@@ -582,8 +580,10 @@ class Application(VuetifyTemplate, HubListener):
         Displays a toast message with an editable message that be dismissed
         manually or will dismiss automatically after a timeout.
 
-        Whether the message shows as a snackbar popup is controlled by ``self.verbosity``,
-        whether the message is added to the history log is controlled by ``self.history_verbosity``.
+        Whether the message shows as a snackbar popup is controlled by
+        ``logger_plg.verbosity``,
+        whether the message is added to the history log is controlled by
+        ``logger_plg.history_verbosity``.
 
         Parameters
         ----------
@@ -600,20 +600,8 @@ class Application(VuetifyTemplate, HubListener):
         # * info lets everything through
         # * success, secondary, and primary are treated as info (not sure what they are used for)
         # * None is also treated as info (when color is not set)
-        popup_level = _verbosity_levels.index(self.verbosity)
-        history_level = _verbosity_levels.index(self.history_verbosity)
-
-        def _color_to_level(color):
-            if color in _verbosity_levels:
-                return color
-            # could create dictionary mapping if we need anything more advanced
-            return 'info'
-
-        msg_level = _verbosity_levels.index(_color_to_level(msg.color))
         logger_plg = self._jdaviz_helper.plugins.get('Logger', None)
-        self.state.snackbar_queue.put(self.state, logger_plg, msg,
-                                      history=msg_level >= history_level,
-                                      popup=msg_level >= popup_level)
+        logger_plg._obj.queue_message(msg, msg.color)
 
     def _on_layers_changed(self, msg):
         if hasattr(msg, 'data'):
@@ -682,7 +670,7 @@ class Application(VuetifyTemplate, HubListener):
         Change reference data to Data with ``data_label``.
         This does not work on data without WCS.
         """
-        if self.config != 'imviz':
+        if self.config not in ('imviz', 'deconfigged'):
             # this method is only meant for Imviz for now
             return
 
@@ -753,13 +741,59 @@ class Application(VuetifyTemplate, HubListener):
                 # re-center the viewer on previous location.
                 viewer.center_on(sky_cen)
 
+    def _link_new_data_by_component_type(self, new_data_label):
+        new_data = self.data_collection[new_data_label]
+
+        if (getattr(new_data, '_importer', None) == 'ImageImporter' and
+                'Orientation' in self._jdaviz_helper.plugins):
+            # Orientation plugin alreadly listens for messages for added Data and handles linking
+            # orientation_plugin._link_image_data()
+            # NOTE: eventually we may only want to skip for pixel/sky coordinates and allow
+            # flux, etc, to link to other data for custom histograms/scatter plots
+            return
+
+        new_links = []
+        for new_comp in new_data.components:
+            if getattr(new_comp, '_component_type', None) in (None, 'unknown'):
+                continue
+
+            found_match = False
+            for existing_data in self.data_collection:
+                if existing_data.label == new_data_label:
+                    continue
+
+                for existing_comp in existing_data.components:
+                    if getattr(existing_comp, '_component_type', None) in (None, 'unknown'):
+                        continue
+
+                    # Create link if component-types match
+                    if new_comp._component_type == existing_comp._component_type:
+                        msg_text = f"Creating link {new_data.label}:{new_comp.label}({new_comp._component_type}) > {existing_data.label}:{existing_comp.label}({existing_comp._component_type})"  # noqa
+                        msg = SnackbarMessage(text=msg_text,
+                                              color='info', sender=self)
+                        self.hub.broadcast(msg)
+                        link = LinkSameWithUnits(new_comp, existing_comp)
+                        new_links.append(link)
+                        # only need one link for the new component, reparenting will handle
+                        # if that data entry is deleted
+                        found_match = True
+                        break  # break out of existing_comp loop
+
+                if found_match:
+                    break  # break out of existing_data loop
+
+        # Add all new links to the data collection
+        if new_links:
+            self.data_collection.add_link(new_links)
+
     def _link_new_data(self, reference_data=None, data_to_be_linked=None):
         """
         When additional data is loaded, check to see if the spectral axis of
         any components are compatible with already loaded data. If so, link
         them so that they can be displayed on the same profile1D plot.
         """
-        if self.config == 'imviz':  # Imviz does its own thing
+        if self.config in CONFIGS_WITH_LOADERS:
+            # automatic linking based on component physical types handled by importers
             return
         elif not self.auto_link:
             return
@@ -777,59 +811,38 @@ class Application(VuetifyTemplate, HubListener):
         if self.config == 'mosviz':
             # In Mosviz, first data is always MOS Table. Use the next data
             default_refdata_index = 1
+        elif self.config == 'cubeviz':
+            spectral_axis_index = dc[0].meta['spectral_axis_index']
         ref_data = dc[reference_data] if reference_data else dc[default_refdata_index]
         linked_data = dc[data_to_be_linked] if data_to_be_linked else dc[-1]
 
-        if 'Trace' in linked_data.meta:
-            links = [LinkSame(linked_data.components[1], ref_data.components[0]),
-                     LinkSame(linked_data.components[0], ref_data.components[1])]
-            dc.add_link(links)
-            return
-
-        elif self.config == 'cubeviz' and linked_data.ndim == 1:
+        if self.config == 'cubeviz' and linked_data.ndim == 1:
             # Don't want to use negative indices in case there are extra components like a mask
-            ref_wavelength_component = dc[0].components[5]
-            ref_flux_component = dc[0].components[6]
-            linked_wavelength_component = dc[-1].components[1]
-            linked_flux_component = dc[-1].components[-1]
+            ref_wavelength_component = dc[0].components[spectral_axis_index]
+            # May need to update this for specutils 2
+            linked_wavelength_component = linked_data.components[1]
 
-            links = [
-                LinkSameWithUnits(ref_wavelength_component, linked_wavelength_component),
-                LinkSame(ref_flux_component, linked_flux_component)
-            ]
-
-            dc.add_link(links)
+            dc.add_link(LinkSame(ref_wavelength_component, linked_wavelength_component))
             return
 
-        elif (linked_data.meta.get('Plugin', None) == 'Spectral Extraction' or
+        elif (linked_data.meta.get('Plugin', None) == '3D Spectral Extraction' or
                 (linked_data.meta.get('Plugin', None) == ('Gaussian Smooth') and
                  linked_data.ndim < 3 and  # Cube linking requires special logic. See below
                  ref_data.ndim < 3)
               ):
-            if self.config == 'specviz2d':
-                links = []
-                if linked_data.ndim == 2:
-                    # extracted image added to data collection
-                    ref_wavelength_component = ref_data.components[1]
-                else:
-                    # extracted spectrum added to data collection
-                    ref_wavelength_component = ref_data.components[3]
-                    links += [LinkSameWithUnits(linked_data.components[0], ref_data.components[1])]
-
-                links += [LinkSameWithUnits(linked_data.components[0], ref_data.components[0]),
-                          LinkSameWithUnits(linked_data.components[1], ref_wavelength_component)]
-            else:
-                links = [LinkSame(linked_data.components[0], ref_data.components[0]),
-                         LinkSame(linked_data.components[1], ref_data.components[1])]
+            links = [LinkSame(linked_data.components[0], ref_data.components[0]),
+                     LinkSame(linked_data.components[1], ref_data.components[1])]
 
             dc.add_link(links)
             return
 
         # The glue-astronomy SpectralCoordinates currently seems incompatible with glue
-        # WCSLink. This gets around it until there's an upstream fix.
-        if isinstance(linked_data.coords, SpectralCoordinates):
-            wc_old = ref_data.world_component_ids[-1]
-            wc_new = linked_data.world_component_ids[0]
+        # WCSLink. This gets around it until there's an upstream fix. Also need to do this
+        # for SpectralGWCS in 1D case (pixel linking below handles cubes)
+        if (isinstance(linked_data.coords, SpectralCoordinates) or
+                isinstance(linked_data.coords, SpectralGWCS) and linked_data.ndim == 1):
+            wc_old = ref_data.world_component_ids[ref_data.meta['spectral_axis_index']]
+            wc_new = linked_data.world_component_ids[linked_data.meta['spectral_axis_index']]
             self.data_collection.add_link(LinkSameWithUnits(wc_old, wc_new))
             return
 
@@ -855,8 +868,14 @@ class Application(VuetifyTemplate, HubListener):
             ref_index = ind
             if (len_linked_pixel == 2 and
                     (linked_data.meta.get("Plugin", None) in
-                     ['Moment Maps', 'Collapse'])):
-                if pixel_coord == 'z':
+                     ['Moment Maps', 'Collapse', 'Sonify Data'])):
+
+                if spectral_axis_index in (2, -1):
+                    link_to_x = 'z'
+                elif spectral_axis_index == 0:
+                    link_to_x = 'x'
+
+                if pixel_coord == link_to_x:
                     linked_index = pc_linked.index('x')
                 elif pixel_coord == 'y':
                     linked_index = pc_linked.index('y')
@@ -1116,7 +1135,7 @@ class Application(VuetifyTemplate, HubListener):
     def _is_subset_temporal(self, subset_region):
         if isinstance(subset_region, Time):
             return True
-        elif isinstance(subset_region, list) and len(subset_region) > 0:
+        elif isinstance(subset_region, list):
             if isinstance(subset_region[0]['region'], Time):
                 return True
         return False
@@ -1138,7 +1157,7 @@ class Application(VuetifyTemplate, HubListener):
         if not hasattr(subset_state.att, "parent"):  # e.g., Cubeviz
             viewer = self.get_viewer(self._jdaviz_helper._default_spectrum_viewer_reference_name)
             data = viewer.data()
-            if data and len(data) > 0 and isinstance(data[0], Spectrum1D):
+            if data and len(data) > 0 and isinstance(data[0], Spectrum):
                 units = data[0].spectral_axis.unit
             else:
                 raise ValueError("Unable to find spectral axis units")
@@ -1148,7 +1167,7 @@ class Application(VuetifyTemplate, HubListener):
             if ndim == 2:
                 units = u.pix
             else:
-                handler, _ = data_translator.get_handler_for(Spectrum1D)
+                handler, _ = data_translator.get_handler_for(Spectrum)
                 spec = handler.to_object(data)
                 units = spec.spectral_axis.unit
 
@@ -1654,7 +1673,7 @@ class Application(VuetifyTemplate, HubListener):
         Parameters
         ----------
         loaded_object : str or object
-            The path to a data file or FITS HDUList or image object or Spectrum1D or
+            The path to a data file or FITS HDUList or image object or Spectrum or
             NDData array or numpy.ndarray.
         ext : str, optional
             The extension (or other distinguishing feature) of data used to identify it.
@@ -1692,8 +1711,8 @@ class Application(VuetifyTemplate, HubListener):
                 data_label = f"{loaded_object.file_name}[HDU object]"
             else:
                 data_label = "Unknown HDU object"
-        elif isinstance(loaded_object, Spectrum1D):
-            data_label = "Spectrum1D"
+        elif isinstance(loaded_object, Spectrum):
+            data_label = "Spectrum"
         elif isinstance(loaded_object, NDData):
             data_label = "NDData"
         elif isinstance(loaded_object, np.ndarray):
@@ -1876,6 +1895,15 @@ class Application(VuetifyTemplate, HubListener):
         """Return a list of available viewer reference names."""
         # Cannot sort because of None
         return [self._viewer_item_by_id(vid).get('reference') for vid in self._viewer_store]
+
+    def get_viewers_of_cls(self, cls):
+        """Return a list of viewers of a specific class."""
+        if isinstance(cls, str):
+            cls_name = cls
+        else:
+            cls_name = cls.__name__
+        return [viewer for viewer in self._viewer_store.values()
+                if viewer.__class__.__name__ == cls_name]
 
     def _update_viewer_reference_name(
         self, old_reference, new_reference, update_id=False
@@ -2165,11 +2193,12 @@ class Application(VuetifyTemplate, HubListener):
 
         else:
             split_label = subset_name.split(" ")
-            if split_label[0] == "Subset" and split_label[1].isdigit():
-                if raise_if_invalid:
-                    raise ValueError("The pattern 'Subset N' is reserved for "
-                                     "auto-generated labels")
-                return False
+            if len(split_label) > 1:
+                if split_label[0] == "Subset" and split_label[1].isdigit():
+                    if raise_if_invalid:
+                        raise ValueError("The pattern 'Subset N' is reserved for "
+                                         "auto-generated labels")
+                    return False
 
         return True
 
@@ -2338,8 +2367,10 @@ class Application(VuetifyTemplate, HubListener):
 
                     elif isinstance(subset_group.subset_state, RangeSubsetState):
                         range_state = subset_group.subset_state
-                        cur_unit = old_parent.coords.spectral_axis.unit
-                        new_unit = new_parent.coords.spectral_axis.unit
+                        wcs_index = (new_parent.coords.world_n_dim - 1 -
+                                     new_parent.meta['spectral_axis_index'])
+                        cur_unit = u.Unit(old_parent.coords.world_axis_units[wcs_index])
+                        new_unit = u.Unit(new_parent.coords.world_axis_units[wcs_index])
                         if cur_unit is not new_unit:
                             range_state.lo, range_state.hi = cur_unit.to(new_unit, [range_state.lo,
                                                                                     range_state.hi])
@@ -2524,13 +2555,26 @@ class Application(VuetifyTemplate, HubListener):
                     self._change_reference_data(base_wcs_layer_label, viewer_id)
             self.remove_data_from_viewer(viewer_id, data_label)
 
-        self.data_collection.remove(self.data_collection[data_label])
+        data_to_remove = self.data_collection[data_label]
+        if self.config in CONFIGS_WITH_LOADERS:
+            data_needing_relinking = []
+            for link in self.data_collection.external_links:
+                if data_to_remove == link.data1:
+                    data_needing_relinking.append(link.data2)
+                elif data_to_remove == link.data2:
+                    data_needing_relinking.append(link.data1)
+
+        self.data_collection.remove(data_to_remove)
+
+        if self.config in CONFIGS_WITH_LOADERS:
+            for data in data_needing_relinking:
+                self._link_new_data_by_component_type(data.label)
 
         # If there are two or more datasets left we need to link them back together if anything
         # was linked only through the removed data.
-        if (len(self.data_collection) > 1 and
-                len(self.data_collection.external_links) < len(self.data_collection) - 1):
-            if orientation_plugin is not None:
+        if orientation_plugin is not None:
+            if (len(self.data_collection) > 1 and
+                    len(self.data_collection.external_links) < len(self.data_collection) - 1):
                 orientation_plugin._obj._link_image_data()
                 # Hack to restore responsiveness to imviz layers
                 for viewer_ref in self.get_viewer_reference_names():
@@ -2541,9 +2585,6 @@ class Application(VuetifyTemplate, HubListener):
                     if len(loaded_layers):
                         self.remove_data_from_viewer(viewer_ref, loaded_layers[-1])
                         self.add_data_to_viewer(viewer_ref, loaded_layers[-1])
-            else:
-                for i in range(1, len(self.data_collection)):
-                    self._link_new_data(data_to_be_linked=i)
 
     def vue_close_snackbar_message(self, event):
         """
@@ -2873,7 +2914,8 @@ class Application(VuetifyTemplate, HubListener):
         self._viewer_store[vid] = viewer
 
         # Add viewer locally
-        if self.config in ('deconfigged', 'specviz', 'specviz2d', 'lcviz'):
+        if (self.config in CONFIGS_WITH_LOADERS
+                and len(self.state.stack_items)):
             # add to bottom (eventually will want more control in placement)
             self.state.stack_items[0]['children'].append(new_stack_item)
         else:
@@ -2984,7 +3026,8 @@ class Application(VuetifyTemplate, HubListener):
 
         # Loaders
         def open():
-            self.state.drawer_content = 'loaders'
+            self.state.drawer_content = 'loaders'  # TODO: rename to "add"?
+            self.state.add_subtab = 0
 
         def close():
             self.state.loader_selected = ''
@@ -3013,6 +3056,8 @@ class Application(VuetifyTemplate, HubListener):
         # Tray plugins
         if self.config == 'deconfigged':
             self.update_tray_items_from_registry()
+            import jdaviz.core.viewer_creators  # noqa
+            self.update_new_viewers_from_registry()
         else:
             for name in config.get('tray', []):
                 tray_registry_member = tray_registry.members.get(name)
@@ -3052,7 +3097,7 @@ class Application(VuetifyTemplate, HubListener):
                     except Exception as e:
                         self.hub.broadcast(SnackbarMessage(
                             f"Failed to load plugin {tray_registry_member.get('name')}: {e}",
-                            sender=self, color='error'))
+                            sender=self, color='error', traceback=e))
                 tray_items.append(tray_item)
 
         self.state.tray_items = tray_items
@@ -3077,6 +3122,61 @@ class Application(VuetifyTemplate, HubListener):
             'widget': "IPY_MODEL_" + tray_item_instance.model_id
         }
         return tray_item
+
+    def update_new_viewers_from_registry(self):
+        # TODO: implement jdaviz.new_viewers dictionary to instantiated items here
+        if self.config != 'deconfigged':
+            raise NotImplementedError("update_new_viewers_from_registry is only "
+                                      "implemented for the deconfigged app")
+
+        # need to rebuild in order, just pulling from existing dict if its already there
+        new_viewer_items = []
+        for name, vc_registry_member in viewer_creator_registry.members.items():
+            try:
+                item = self.get_new_viewer_item_from_name(
+                            name, return_widget=False)
+            except KeyError:
+                try:
+                    item = self._create_new_viewer_item(vc_registry_member)
+                except Exception as e:
+                    self.hub.broadcast(SnackbarMessage(
+                        f"Failed to load viewer {name}: {e}",
+                        sender=self, color='error', traceback=e))
+                    continue
+
+            new_viewer_items.append(item)
+
+        self.state.new_viewer_items = new_viewer_items
+        relevant_items = [nvi for nvi in new_viewer_items if nvi['is_relevant']]
+        if not len(self.state.new_viewer_selected) and len(relevant_items):
+            self.state.new_viewer_selected = relevant_items[0]['label']
+
+    def _create_new_viewer_item(self, vc_registry_member):
+        def open():
+            self.state.drawer_content = 'loaders'  # TODO: rename to "add"?
+            self.state.add_subtab = 1
+
+        def close():
+            self.state.new_viewer_selected = ''
+
+        def set_active_viewer_creator(new_viewer_label):
+            self.state.new_viewer_selected = new_viewer_label
+
+        vc_instance = vc_registry_member(app=self,
+                                         open_callback=open,
+                                         close_callback=close,
+                                         set_active_callback=set_active_viewer_creator)
+        new_viewer_item = {
+            'label': vc_registry_member._registry_label,
+            'widget': "IPY_MODEL_" + vc_instance.model_id,
+            'api_methods': vc_instance.api_methods,
+            'is_relevant': vc_instance.is_relevant,
+        }
+        return new_viewer_item
+
+    def get_new_viewer_item_from_name(self, name, return_widget=True):
+        return self._get_state_item_from_name(self.state.new_viewer_items,
+                                              name, return_widget)
 
     def _reset_state(self):
         """ Resets the application state """
@@ -3110,6 +3210,24 @@ class Application(VuetifyTemplate, HubListener):
         cfg = get_configuration(path=path, section=section, config=config)
         return cfg
 
+    def _get_state_item_from_name(self, state_list, name, return_widget=True):
+        from ipywidgets.widgets import widget_serialization
+
+        ret_item = None
+        for item in state_list:
+            if item.get('name') == name or item.get('label') == name:
+                ipy_model_id = item['widget']
+                if return_widget:
+                    ret_item = widget_serialization['from_json'](ipy_model_id, None)
+                else:
+                    ret_item = item
+                break
+
+        if ret_item is None:
+            raise KeyError(f'{name} not found')
+
+        return ret_item
+
     def get_tray_item_from_name(self, name, return_widget=True):
         """Return the instance of a tray item for a given name.
         This is useful for direct programmatic access to Jdaviz plugins
@@ -3131,22 +3249,7 @@ class Application(VuetifyTemplate, HubListener):
         KeyError
             Name not found.
         """
-        from ipywidgets.widgets import widget_serialization
-
-        tray_item = None
-        for item in self.state.tray_items:
-            if item['name'] == name or item['label'] == name:
-                ipy_model_id = item['widget']
-                if return_widget:
-                    tray_item = widget_serialization['from_json'](ipy_model_id, None)
-                else:
-                    tray_item = item
-                break
-
-        if tray_item is None:
-            raise KeyError(f'{name} not found in app.state.tray_items')
-
-        return tray_item
+        return self._get_state_item_from_name(self.state.tray_items, name, return_widget)
 
     def _init_data_associations(self):
         # assume all Data are parents:

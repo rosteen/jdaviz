@@ -22,13 +22,13 @@ from astropy.nddata import NDDataArray, CCDData, StdDevUncertainty
 import astropy.units as u
 from astropy.utils.decorators import deprecated
 from regions.core.core import Region
-from specutils import Spectrum1D, SpectralRegion
+from specutils import Spectrum, SpectralRegion
 
 from jdaviz.app import Application
 from jdaviz.core.events import SnackbarMessage, ExitBatchLoadMessage, SliceSelectSliceMessage
 from jdaviz.core.loaders.resolvers import find_matching_resolver
 from jdaviz.core.template_mixin import show_widget
-from jdaviz.utils import data_has_valid_wcs
+from jdaviz.utils import data_has_valid_wcs, CONFIGS_WITH_LOADERS
 from jdaviz.core.unit_conversion_utils import (all_flux_unit_conversion_equivs,
                                                check_if_unit_is_per_solid_angle,
                                                flux_conversion_general,
@@ -58,13 +58,16 @@ class ConfigHelper(HubListener):
     _default_configuration = 'default'
     _component_ids = {}
 
-    def __init__(self, app=None, verbosity='warning', history_verbosity='info'):
+    def __init__(self, app=None, verbosity=None, history_verbosity=None):
         if app is None:
             self.app = Application(configuration=self._default_configuration)
         else:
             self.app = app
-        self.app.verbosity = verbosity
-        self.app.history_verbosity = history_verbosity
+        if (logger_plg := self.plugins.get('Logger')) is not None:
+            if verbosity is not None:
+                logger_plg.popup_verbosity = verbosity
+            if history_verbosity is not None:
+                logger_plg.history_verbosity = history_verbosity
 
         # give a reference from the app back to this config helper.  These can be accessed from a
         # viewer via viewer.jdaviz_app and viewer.jdaviz_helper
@@ -130,11 +133,51 @@ class ConfigHelper(HubListener):
         loaders : dict
             dict of loader objects
         """
-        if not (self.app.state.dev_loaders or self.app.config in ('deconfigged', 'specviz', 'specviz2d')):  # noqa
+        if not (self.app.state.dev_loaders or self.app.config in CONFIGS_WITH_LOADERS):  # noqa
             raise NotImplementedError("loaders is under active development and requires a dev-flag to test")  # noqa
         loaders = {item['label']: widget_serialization['from_json'](item['widget'], None).user_api
                    for item in self.app.state.loader_items}
         return loaders
+
+    def _get_loader(self, resolver_name, parser_name=None, importer_name=None):
+        """
+        Attempt to retrieve an resolver/parser/importer for debugging purposes.
+        Can be used to debug an importer that shows as invalid because of an internal error.
+        """
+        ldr = self.loaders.get(resolver_name)
+        resolver = ldr._obj
+        if parser_name is None:
+            return resolver
+
+        orig_debug = ldr.format.debug
+        ldr.format.debug = True
+        parser = ldr.format._dbg_parsers[parser_name]
+        ldr.format.debug = orig_debug
+        if importer_name is None:
+            return parser
+
+        input = parser.output
+        ldr.format.debug = orig_debug
+
+        from jdaviz.core.registries import loader_importer_registry
+        ImporterCls = loader_importer_registry.members.get(importer_name)
+        return ImporterCls(app=self.app, resolver=resolver, input=input)
+
+    @property
+    def new_viewers(self):
+        """
+        Access API objects for creating new viewers.
+
+        Returns
+        -------
+        new_viewers : dict
+            dict of viewer-creator objects
+        """
+        if not self.app.config == 'deconfigged':
+            raise NotImplementedError("new_viewers is only enabled in the deconfigged app")  # noqa
+        new_viewers = {item['label']: widget_serialization['from_json'](item['widget'], None).user_api  # noqa
+                       for item in self.app.state.new_viewer_items if item['is_relevant']}
+        return new_viewers
 
     def _load(self, inp=None, loader=None, format=None, target=None, **kwargs):
         """
@@ -162,6 +205,12 @@ class ConfigHelper(HubListener):
                                           format=format,
                                           target=target,
                                           **kwargs)
+
+        if 'show_in_viewer' in kwargs.keys():
+            if 'viewer' in kwargs.keys():
+                raise ValueError('Cannot specify both "show_in_viewer" and "viewer".')
+            warnings.warn('The "show_in_viewer" argument is deprecated and will be removed in a future version. Use "viewer" instead.', DeprecationWarning)  # noqa
+            kwargs['viewer'] = '*' if kwargs.pop('show_in_viewer') else []
 
         importer = resolver.importer
         for k, v in kwargs.items():
@@ -194,11 +243,17 @@ class ConfigHelper(HubListener):
         plugins = {item['label']: widget_serialization['from_json'](item['widget'], None).user_api
                    for item in self.app.state.tray_items if item['is_relevant']}
 
+        msg_temp = "in the future, the formerly named \"{}\" plugin will only be available by its new name: \"{}\""  # noqa
+
+        old_new = (('Imviz Line Profiles (XY)', 'Image Profiles (XY)'),  # renamed in 4.0
+                   ('Spectral Extraction', '2D Spectral Extraction'),  # renamed in 4.3
+                   ('Spectral Extraction', '3D Spectral Extraction'))  # renamed in 4.3
+
         # handle renamed plugins during deprecation
-        if 'Image Profiles (XY)' in plugins:
-            # renamed in 4.0
-            plugins['Imviz Line Profiles (XY)'] = plugins['Image Profiles (XY)']._obj.user_api
-            plugins['Imviz Line Profiles (XY)']._deprecation_msg = 'in the future, the formerly named \"Imviz Line Profiles (XY)\" plugin will only be available by its new name: \"Image Profiles (XY)\".'  # noqa
+        for old, new in old_new:
+            if new in plugins:
+                plugins[old] = plugins[new]._obj.user_api
+                plugins[old]._deprecation_msg = msg_temp.format(old, new)
 
         return plugins
 
@@ -438,7 +493,7 @@ class ConfigHelper(HubListener):
 
     def _handle_display_units(self, data, use_display_units=True):
         if use_display_units:
-            if isinstance(data, Spectrum1D):
+            if isinstance(data, Spectrum):
                 spectral_unit = self.app._get_display_unit('spectral')
                 if not spectral_unit:
                     return data
@@ -501,15 +556,19 @@ class ConfigHelper(HubListener):
                                                     eqv, with_unit=False) * u.Unit(y_unit)
 
                 # convert spectral axis to display units
-                new_spec = (spectral_axis_conversion(data.spectral_axis.value,
-                                                     data.spectral_axis.unit,
-                                                     spectral_unit)
-                            * u.Unit(spectral_unit))
+                if data.spectral_axis.unit != spectral_unit:
+                    new_spec = (spectral_axis_conversion(data.spectral_axis.value,
+                                                         data.spectral_axis.unit,
+                                                         spectral_unit)
+                                * u.Unit(spectral_unit))
+                else:
+                    new_spec = data.spectral_axis
 
-                data = Spectrum1D(spectral_axis=new_spec,
-                                  flux=new_y,
-                                  uncertainty=new_uncert,
-                                  mask=data.mask)
+                data = Spectrum(spectral_axis=new_spec,
+                                flux=new_y,
+                                uncertainty=new_uncert,
+                                mask=data.mask,
+                                spectral_axis_index=data.spectral_axis_index)
             else:  # pragma: nocover
                 raise NotImplementedError(f"converting {data.__class__.__name__} to display units is not supported")  # noqa
         return data
@@ -544,17 +603,20 @@ class ConfigHelper(HubListener):
 
         if temporal_subset:
             if mask_subset is not None:
-                raise ValueError("cannot use both mask_subset and spectral_subset")
+                raise ValueError("cannot use both mask_subset and temporal_subset")
             mask_subset = temporal_subset
 
         # End validity checks and start data retrieval
         data = self.app.data_collection[data_label]
 
         if not cls:
-            if 'Trace' in data.meta:
+            if hasattr(data, '_native_data_cls'):
+                cls = data._native_data_cls
+            # TODO: once everything goes through loaders, can we remove everything below?
+            elif 'Trace' in data.meta:
                 cls = None
             elif data.ndim == 2 and self.app.config == "specviz2d":
-                cls = Spectrum1D
+                cls = Spectrum
             elif data.ndim == 2:
                 cls = CCDData
             elif data.ndim in [1, 3]:
@@ -562,11 +624,13 @@ class ConfigHelper(HubListener):
                     cls = NDDataArray
                 else:
                     # for cubeviz, specviz, mosviz, this must be a spectrum:
-                    cls = Spectrum1D
+                    cls = Spectrum
 
         object_kwargs = {}
-        if cls == Spectrum1D:
+        if cls == Spectrum:
             object_kwargs['statistic'] = None
+            if 'spectral_axis_index' in data.meta:
+                object_kwargs['spectral_axis_index'] = data.meta['spectral_axis_index']
 
         if not spatial_subset and not mask_subset:
             if 'Trace' in data.meta:
@@ -623,7 +687,7 @@ class ConfigHelper(HubListener):
                               f" subset {mask_subset} applied of type {cls}."
                               f" Exception: {e}")
             if spatial_subset:
-                # Return collapsed Spectrum1D object with spectral subset mask applied
+                # Return collapsed Spectrum object with spectral subset mask applied
                 data.mask = spec_subset.mask
             else:
                 data = spec_subset
@@ -638,7 +702,7 @@ class ConfigHelper(HubListener):
         ----------
         data_label : str, optional
             Provide a label to retrieve a specific data set from data_collection.
-        cls : `~specutils.Spectrum1D`, `~astropy.nddata.CCDData`, optional
+        cls : `~specutils.Spectrum`, `~astropy.nddata.CCDData`, optional
             The type that data will be returned as.
         use_display_units : bool, optional
             Whether to convert to the display units defined in the <unit-conversion> plugin.

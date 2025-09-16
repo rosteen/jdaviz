@@ -22,7 +22,8 @@ from jdaviz.utils import get_top_layer_index
 __all__ = ['Catalogs']
 
 
-@tray_registry('imviz-catalogs', label="Catalog Search")
+@tray_registry('imviz-catalogs', label="Catalog Search",
+               category="data:analysis")
 class Catalogs(PluginTemplateMixin, ViewerSelectMixin, HasFileImportSelect, TableMixin):
     """
     See the :ref:`Catalog Search Plugin Documentation <imviz-catalogs>` for more details.
@@ -66,19 +67,13 @@ class Catalogs(PluginTemplateMixin, ViewerSelectMixin, HasFileImportSelect, Tabl
 
     table_selected_widget = Unicode().tag(sync=True)
 
-    @property
-    def user_api(self):
-        return PluginUserApi(self, expose=('clear_table', 'export_table', 'import_catalog',
-                                           'zoom_to_selected', 'select_rows',
-                                           'select_all', 'select_none',
-                                           'catalog', 'max_sources', 'search',
-                                           'table', 'table_selected'))
-
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
         # description displayed under plugin title in tray
         self._plugin_description = 'Query catalog for objects within region on sky.'
+
+        self.viewer.add_filter('is_image_viewer')
 
         cat_options = ['SDSS', 'Gaia']
         if not self.app.state.settings.get('server_is_remote', False):
@@ -132,6 +127,16 @@ class Catalogs(PluginTemplateMixin, ViewerSelectMixin, HasFileImportSelect, Tabl
 
         self.session.hub.subscribe(self, CatalogSelectClickEventMessage,
                                    self._on_catalog_select_click_event)
+
+        self.observe_traitlets_for_relevancy(traitlets_to_observe=['viewer_items'])
+
+    @property
+    def user_api(self):
+        return PluginUserApi(self, expose=('clear_table', 'export_table', 'import_catalog',
+                                           'zoom_to_selected', 'select_rows',
+                                           'select_all', 'select_none',
+                                           'catalog', 'max_sources', 'search',
+                                           'table', 'table_selected'))
 
     @staticmethod
     def _file_parser(path):
@@ -240,7 +245,9 @@ class Catalogs(PluginTemplateMixin, ViewerSelectMixin, HasFileImportSelect, Tabl
                           f"r={zoom_radius}: {repr(e)}")
                 if error_on_fail:
                     raise Exception(errmsg) from e
-                self.hub.broadcast(SnackbarMessage(errmsg, color='error', sender=self))
+                self.hub.broadcast(SnackbarMessage(errmsg, color='error',
+                                                   sender=self,
+                                                   traceback=e))
                 query_region_result = None
 
             if query_region_result is None:

@@ -31,7 +31,7 @@
       hint="Select the data set to be fitted."
     />
 
-    <plugin-subset-select 
+    <plugin-subset-select
       :items="spectral_subset_items"
       :selected.sync="spectral_subset_selected"
       :show_if_single_entry="true"
@@ -67,7 +67,7 @@
           v-model.number="poly_order"
           :label="api_hints_enabled ? 'plg.poly_order' : 'Order'"
           :class="api_hints_enabled ? 'api-hint' : null"
-          :rules="[() => poly_order!=='' || 'This field is required']"
+          :error-messages="poly_order_invalid_msg"
           hint="Order of polynomial to fit."
           persistent-hint
         >
@@ -88,7 +88,7 @@
       <v-row justify="end">
         <j-tooltip tipid='plugin-model-fitting-add-model'>
           <plugin-action-button
-            :disabled="!form_valid_model_component || comp_label_invalid_msg.length > 0"
+            :disabled="!form_valid_model_component || comp_label_invalid_msg.length > 0 || dataset_items.length === 0"
             :results_isolated_to_plugin="true"
             :api_hints_enabled="api_hints_enabled"
             @click="add_model"
@@ -101,6 +101,11 @@
           </plugin-action-button>
         </j-tooltip>
       </v-row>
+      <v-row v-if="dataset_items.length === 0">
+        <span class="v-messages v-messages__message text--secondary" style="color: red !important">
+          Compatible data must be loaded to add a model component.
+        </span>
+      </v-row>
     </v-form>
 
     <div v-if="component_models.length">
@@ -111,7 +116,7 @@
             tile
             :elevation=0
             x-small
-            dense 
+            dense
             color="turquoise"
             dark
             style="padding-left: 8px; padding-right: 6px;"
@@ -139,7 +144,7 @@
                   </v-row>
                   <v-row v-for="param in item.parameters">
                     <span style="white-space: nowrap; overflow-x: clip; width: calc(100% - 24px); margin-right: -48px">
-                      {{ param.name }} = {{ param.value }}                      
+                      {{ param.name }} = {{ param.value }}
                     </span>
                   </v-row>
                 </v-col>
@@ -159,7 +164,7 @@
                         tile
                         :elevation=0
                         x-small
-                        dense 
+                        dense
                         color="turquoise"
                         dark
                         style="padding-left: 8px; padding-right: 6px;"
@@ -185,7 +190,7 @@
                     tile
                     :elevation=0
                     x-small
-                    dense 
+                    dense
                     color="turquoise"
                     dark
                     style="padding-left: 8px; padding-right: 6px;"
@@ -259,7 +264,46 @@
             Note: cube fit results are not logged to table.
         </span>
       </v-row>
-
+      <v-row v-if="fitter_items">
+        <v-select
+          attach
+          :items="fitter_items.map(i => i.label)"
+          v-model="fitter_selected"
+          :label="api_hints_enabled ? 'plg.fitter_component.selected =' : 'Fitter Component'"
+          :class="api_hints_enabled ? 'api-hint' : null"
+          hint="Select a fitter for the model."
+          persistent-hint
+        ></v-select>
+      </v-row>
+      <v-row v-if="fitter_error">
+        <span class="v-messages v-messages__message text--secondary" style="color: red !important">
+            {{ fitter_error }}
+        </span>
+      </v-row>
+      <v-expansion-panels accordion v-if="fitter_parameters.parameters.length">
+         <v-expansion-panel>
+              <v-expansion-panel-header v-slot="{ open }">
+                <span style="padding: 6px">Fitter Parameters</span>
+              </v-expansion-panel-header>
+              <v-expansion-panel-content class="plugin-expansion-panel-content">
+              <div v-for="item in fitter_parameters.parameters">
+                <v-switch v-if="isBoolean(item.value)" v-model="item.value">
+                    <template v-slot:label>
+                        <span class="font-weight-bold" style="overflow-wrap: anywhere; font-size: 12pt">
+                          {{ item.name }}
+                        </span>
+                     </template>
+                </v-switch>
+                <v-text-field v-else
+                    :label="item.name"
+                    v-model.number="item.value"
+                    type="number"
+                    style="padding-top: 0px; margin-top: 14px; margin-bottom: 10px;"
+                  ></v-text-field>
+              </div>
+              </v-expansion-panel-content>
+         </v-expansion-panel>
+      </v-expansion-panels accordion>
       <plugin-add-results
         :label.sync="results_label"
         :label_default="results_label_default"
@@ -276,6 +320,7 @@
         add_results_api_hint='plg.add_results'
         action_api_hint='plg.calculate_fit(add_data=True)'
         :api_hints_enabled="api_hints_enabled"
+        :disabled = "dataset_selected === ''"
         @click:action="apply"
       >
         <div v-if="config!=='cubeviz' || !cube_fit">
@@ -324,7 +369,7 @@
       </v-row>
 
       <j-plugin-section-header>Results History</j-plugin-section-header>
-      <jupyter-widget :widget="table_widget"></jupyter-widget> 
+      <jupyter-widget :widget="table_widget"></jupyter-widget>
     </div>
   </j-tray-plugin>
 </template>
@@ -343,6 +388,9 @@
       },
       roundUncertainty(uncertainty) {
         return uncertainty.toPrecision(2)
+      },
+      isBoolean(val) {
+        return val === false || val === true
       }
     }
   }

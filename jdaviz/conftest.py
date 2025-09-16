@@ -12,17 +12,105 @@ from astropy import units as u
 from astropy.io import fits
 from astropy.nddata import CCDData, StdDevUncertainty
 from astropy.wcs import WCS
-from specutils import Spectrum1D, SpectrumCollection, SpectrumList
+from specutils import Spectrum, SpectrumCollection, SpectrumList
+from astropy.utils.masked import Masked
 
 from jdaviz import __version__, Cubeviz, Imviz, Mosviz, Specviz, Specviz2d, Rampviz, App
-from jdaviz.configs.imviz.tests.utils import create_wfi_image_model
+from jdaviz.configs.imviz.tests.utils import (create_wfi_image_model,
+                                              _image_hdu_nowcs,
+                                              _image_hdu_wcs,
+                                              _image_nddata_wcs)
 from jdaviz.configs.imviz.plugins.parsers import HAS_ROMAN_DATAMODELS
 from jdaviz.utils import NUMPY_LT_2_0
+from jdaviz.core.loaders.importers.spectrum_list.spectrum_list import (
+    SpectrumListImporter,
+    SpectrumListConcatenatedImporter
+)
+from jdaviz.core.registries import loader_importer_registry
+from jdaviz.core.template_mixin import PluginTemplateMixin
+from jdaviz.core.registries import tray_registry
 
 if not NUMPY_LT_2_0:
     np.set_printoptions(legacy="1.25")
 
 SPECTRUM_SIZE = 10  # length of spectrum
+
+
+@pytest.fixture
+def fake_classes_in_registries():
+    """
+    This fixture is meant to be used in cases where a test
+    needs to check items in the registry. It provides a
+    list of fake items in the various registries that could
+    potentially throw off those tests if not accounted for.
+    """
+    return ('Test Fake Plugin',
+            'Test Fake 1D Spectrum List',
+            'Test Fake 1D Spectrum List Concatenated')
+
+
+@tray_registry('test-fake-plugin', label='Test Fake Plugin', category='core')
+class FakePlugin(PluginTemplateMixin):
+    template = ''
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+
+@loader_importer_registry('Test Fake 1D Spectrum List')
+class FakeSpectrumListImporter(SpectrumListImporter):
+    """A fake importer for testing/convenience purposes only.
+    Mostly used to hot-update input for clean code/speed purposes.
+
+    Usage Example:
+    x = FakeSpectrumListImporter(app=deconfigged_helper.app,
+                                 resolver=deconfigged_helper.loaders['object']._obj,
+                                 input=premade_spectrum_list)
+    """
+    template = ''
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.new_default_data_label = None
+
+    @property
+    def input(self):
+        return super().input
+
+    @input.setter
+    def input(self, value):
+        self._input = value
+
+    @property
+    def default_data_label_from_resolver(self):
+        if hasattr(self, 'new_default_data_label'):
+            return self.new_default_data_label
+        return None
+
+
+@loader_importer_registry('Test Fake 1D Spectrum List Concatenated')
+class FakeSpectrumListConcatenatedImporter(SpectrumListConcatenatedImporter):
+    """A fake importer for testing/convenience purposes only.
+    Mostly used to hot-update input for clean code/speed purposes."""
+    template = ''
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.new_default_data_label = None
+
+    @property
+    def input(self):
+        return super().input
+
+    @input.setter
+    def input(self, value):
+        self._input = value
+
+    @property
+    def default_data_label_from_resolver(self):
+        if hasattr(self, 'new_default_data_label'):
+            return self.new_default_data_label
+        return None
 
 
 @pytest.fixture
@@ -62,12 +150,11 @@ def deconfigged_helper():
 
 @pytest.fixture
 def roman_level_1_ramp():
-    from roman_datamodels.maker_utils import mk_datamodel
     from roman_datamodels.datamodels import RampModel
     rng = np.random.default_rng(seed=42)
 
     shape = (10, 25, 25)
-    data_model = mk_datamodel(RampModel, shape=shape, dq=False)
+    data_model = RampModel.create_fake_data(shape=shape)
 
     data_model.data = 100 + 3 * np.cumsum(rng.uniform(size=shape), axis=0)
     return data_model
@@ -198,27 +285,78 @@ def spectrum1d_cube_wcs():
     return wcs
 
 
-def _create_spectrum1d_with_spectral_unit(spectralunit=u.AA):
+def _create_spectrum1d_with_spectral_unit(spectralunit=u.AA, spectral_mask=None, wfss=False,
+                                          exposure='0_0_0_1', source_id='0000'):
     np.random.seed(42)
 
+    if spectral_mask is None:
+        spectral_mask = np.array([False] * SPECTRUM_SIZE)
+
     # We make this first so we don't have to worry about inputting different bounds
-    spec_axis = np.linspace(6000, 8000, SPECTRUM_SIZE) * u.AA
+    spec_axis = Masked(np.linspace(6000, 8000, SPECTRUM_SIZE) * u.AA,
+                       mask=spectral_mask)
     if spectralunit != u.AA:
         spec_axis = spec_axis.to(spectralunit)
 
     flux = (np.random.randn(len(spec_axis.value)) +
             10*np.exp(-0.001*(spec_axis.value-6563)**2) +
             spec_axis.value/500) * u.Jy
+
     uncertainty = StdDevUncertainty(np.abs(np.random.randn(len(spec_axis.value))) * u.Jy)
 
     meta = dict(header=dict(FILENAME="jdaviz-test-file.fits"))
+    if wfss:
+        meta['header'].update(dict(DATAMODL='WFSSMulti', EXPGRPID=exposure))
+        meta.update(dict(source_id=source_id))
 
-    return Spectrum1D(spectral_axis=spec_axis, flux=flux, uncertainty=uncertainty, meta=meta)
+    # Note, an INFO message pops up informing the user
+    # 'overwriting Masked Quantity's current mask with specified mask. [astropy.nddata.nddata]'
+    # This is expected behavior albeit a nuisance. Is it possible to suppress this message?
+    return Spectrum(spectral_axis=spec_axis, flux=flux, uncertainty=uncertainty,
+                    mask=spectral_mask, meta=meta)
+
+
+@pytest.fixture
+def make_empty_spectrum():
+    return Spectrum(spectral_axis=np.array([]) * u.Hz,
+                    flux=np.array([]) * u.Jy,
+                    uncertainty=StdDevUncertainty(np.array([])),
+                    mask=np.array([]),
+                    meta={})
 
 
 @pytest.fixture
 def spectrum1d():
     return _create_spectrum1d_with_spectral_unit()
+
+
+@pytest.fixture
+def partially_masked_spectrum1d():
+    mask = np.array([False] * SPECTRUM_SIZE)
+    mask[-3:] = True
+    return _create_spectrum1d_with_spectral_unit(spectral_mask=mask)
+
+
+@pytest.fixture
+def wfss_spectrum1d():
+    return _create_spectrum1d_with_spectral_unit(wfss=True)
+
+
+# WFSS may have spectral axes that are partially masked
+# and this is not allowed in specutils
+@pytest.fixture
+def partially_masked_wfss_spectrum1d():
+    mask = np.array([False] * SPECTRUM_SIZE)
+    mask[-3:] = True
+    return _create_spectrum1d_with_spectral_unit(spectral_mask=mask, wfss=True, source_id='1111')
+
+
+@pytest.fixture
+def partially_masked_wfss_spectrum1d_exp1():
+    mask = np.array([False] * SPECTRUM_SIZE)
+    mask[-3:] = True
+    return _create_spectrum1d_with_spectral_unit(spectral_mask=mask, wfss=True,
+                                                 exposure='1_1_1', source_id='1111')
 
 
 @pytest.fixture
@@ -237,6 +375,18 @@ def spectrum_collection(spectrum1d):
 
 
 @pytest.fixture
+def premade_spectrum_list(spectrum1d, partially_masked_spectrum1d,
+                          wfss_spectrum1d, partially_masked_wfss_spectrum1d,
+                          partially_masked_wfss_spectrum1d_exp1):
+    return SpectrumList([
+        spectrum1d,
+        partially_masked_spectrum1d,
+        wfss_spectrum1d,
+        partially_masked_wfss_spectrum1d,
+        partially_masked_wfss_spectrum1d_exp1])
+
+
+@pytest.fixture
 def multi_order_spectrum_list(spectrum1d, spectral_orders=10):
     sc = []
     np.random.seed(42)
@@ -249,8 +399,8 @@ def multi_order_spectrum_list(spectrum1d, spectral_orders=10):
                 spec_axis.value / 500) * u.Jy
         uncertainty = StdDevUncertainty(np.abs(np.random.randn(len(spec_axis.value))) * u.Jy)
         meta = dict(header=dict(FILENAME="jdaviz-test-multi-order-file.fits"))
-        spectrum1d = Spectrum1D(spectral_axis=spec_axis, flux=flux,
-                                uncertainty=uncertainty, meta=meta)
+        spectrum1d = Spectrum(spectral_axis=spec_axis, flux=flux,
+                              uncertainty=uncertainty, meta=meta)
 
         sc.append(spectrum1d)
 
@@ -270,12 +420,12 @@ def _create_spectrum1d_cube_with_fluxunit(fluxunit=u.Jy, shape=(2, 2, 4), with_u
     if with_uncerts:
         uncert = StdDevUncertainty(np.abs(np.random.normal(flux) * fluxunit))
 
-        return Spectrum1D(flux=flux,
-                          uncertainty=uncert,
-                          wcs=w,
-                          meta=wcs_dict)
+        return Spectrum(flux=flux,
+                        uncertainty=uncert,
+                        wcs=w,
+                        meta=wcs_dict)
     else:
-        return Spectrum1D(flux=flux, wcs=w, meta=wcs_dict)
+        return Spectrum(flux=flux, wcs=w, meta=wcs_dict)
 
 
 @pytest.fixture
@@ -302,7 +452,7 @@ def spectrum1d_cube_largest():
     w = WCS(wcs_dict)
     flux = np.zeros((20, 30, 3001), dtype=np.float32)  # nx=20 ny=30 nz=3001
     flux[1:11, 5:15, :] = 1  # Bright corner
-    return Spectrum1D(flux=flux * u.Jy, wcs=w, meta=wcs_dict)
+    return Spectrum(flux=flux * u.Jy, wcs=w, meta=wcs_dict)
 
 
 @pytest.fixture
@@ -340,19 +490,19 @@ def mos_spectrum1d(mos_spectrum2d):
             10*np.exp(-0.001*(spec_axis.value-6563)**2) +
             spec_axis.value/500) * u.Jy
 
-    return Spectrum1D(spectral_axis=spec_axis, flux=flux)
+    return Spectrum(spectral_axis=spec_axis, flux=flux)
 
 
 @pytest.fixture
 def spectrum2d():
     '''
-    A simple 2D Spectrum1D with a center "trace" array rising from 0 to 10
+    A simple 2D Spectrum with a center "trace" array rising from 0 to 10
     with two "zero array" buffers above and below
     '''
     data = np.zeros((5, 10))
     data[3] = np.arange(10)
 
-    return Spectrum1D(flux=data*u.MJy, spectral_axis=data[3]*u.um)
+    return Spectrum(flux=data*u.MJy, spectral_axis=data[3]*u.um)
 
 
 def _generate_mos_spectrum2d():
@@ -365,22 +515,22 @@ def _generate_mos_spectrum2d():
         'CRVAL1': 0.0, 'CRVAL2': 5.0,
         'RADESYS': 'ICRS', 'SPECSYS': 'BARYCENT'}
     np.random.seed(42)
-    data = np.random.sample((1024, 15)) * u.Jy
+    data = np.random.sample((15, 1024)) * u.Jy
     return data, header
 
 
 @pytest.fixture
 def mos_spectrum2d():
     '''
-    A specially defined 2D (spatial) Spectrum1D whose wavelength range matches the
+    A specially defined 2D (spatial) Spectrum whose wavelength range matches the
     mos-specific 1D spectrum.
 
-    TODO: This should be reformed to match the global Spectrum1D defined above so that we may
+    TODO: This should be reformed to match the global Spectrum defined above so that we may
     deprecate the mos-specific spectrum1d.
     '''
     data, header = _generate_mos_spectrum2d()
     wcs = WCS(header)
-    return Spectrum1D(data, wcs=wcs, meta=header)
+    return Spectrum(data, wcs=wcs, meta=header)
 
 
 @pytest.fixture
@@ -422,6 +572,30 @@ def mos_image():
 def roman_imagemodel():
     if HAS_ROMAN_DATAMODELS:
         return create_wfi_image_model((20, 10))
+
+
+@pytest.fixture
+def image_hdu_nowcs():
+    return _image_hdu_nowcs()
+
+
+@pytest.fixture
+def image_hdu_wcs():
+    return _image_hdu_wcs()
+
+
+@pytest.fixture
+def multi_extension_image_hdu_wcs():
+    return fits.HDUList([fits.PrimaryHDU(),
+                         _image_hdu_wcs(),
+                         _image_hdu_nowcs(np.zeros((10, 10)), name='MASK'),
+                         _image_hdu_nowcs(name='ERR'),
+                         _image_hdu_nowcs(name='DQ')])
+
+
+@pytest.fixture
+def image_nddata_wcs():
+    return _image_nddata_wcs()
 
 
 # Copied over from https://github.com/spacetelescope/ci_watson

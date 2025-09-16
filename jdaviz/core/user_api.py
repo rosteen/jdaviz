@@ -7,7 +7,7 @@ __all__ = ['UserApiWrapper', 'PluginUserApi',
            'ViewerUserApi']
 
 _internal_attrs = ('_obj', '_expose', '_items', '_readonly', '_exclude_from_dict',
-                   '__doc__', '_deprecation_msg', '_deprecated')
+                   '__doc__', '_deprecation_msg', '_deprecated', '_repr_callable')
 
 
 class UserApiWrapper:
@@ -15,13 +15,15 @@ class UserApiWrapper:
     This is an API wrapper around an internal object.  For a full list of attributes/methods,
     call dir(object).
     """
-    def __init__(self, obj, expose=[], readonly=[], exclude_from_dict=[], deprecated=[]):
+    def __init__(self, obj, expose=[], readonly=[], exclude_from_dict=[], deprecated=[],
+                 repr_callable=None):
         self._obj = obj
         self._expose = list(expose) + list(readonly)
         self._readonly = readonly
         self._exclude_from_dict = exclude_from_dict
         self._deprecation_msg = None
         self._deprecated = deprecated
+        self._repr_callable = repr_callable
         if obj.__doc__ is not None:
             self.__doc__ = self.__doc__ + "\n\n\n" + obj.__doc__
 
@@ -29,6 +31,8 @@ class UserApiWrapper:
         return self._expose
 
     def __repr__(self):
+        if self._repr_callable is not None:
+            return self._repr_callable()
         return f'<{self._obj.__class__.__name__} API>'
 
     def __eq__(self, other):
@@ -47,6 +51,7 @@ class UserApiWrapper:
     def __setattr__(self, attr, value):
         if attr in _internal_attrs:
             return super().__setattr__(attr, value)
+
         if attr not in self._expose:
             raise ValueError(f"{attr} is not a valid attribute and cannot be set")
 
@@ -56,33 +61,66 @@ class UserApiWrapper:
         exp_obj = getattr(self._obj, attr)
         if hasattr(exp_obj, '__call__'):
             raise AttributeError(f"{attr} is a callable, cannot set to a value.  See help({attr}) for input arguments.")  # noqa
+
         from jdaviz.core.template_mixin import (SelectPluginComponent,
                                                 UnitSelectPluginComponent,
                                                 SelectFileExtensionComponent,
                                                 PlotOptionsSyncState,
                                                 AddResults,
-                                                AutoTextField)
+                                                AutoTextField,
+                                                ViewerSelectCreateNew)
+        if isinstance(exp_obj, ViewerSelectCreateNew):
+            from jdaviz.utils import has_wildcard
+            if value in exp_obj.choices + ['', []] or has_wildcard(value):
+                exp_obj.create_new.selected = ''
+                exp_obj.selected = value
+                return
+            elif len(exp_obj.create_new.choices) > 0:
+                exp_obj.create_new.selected = exp_obj.create_new.choices[0]
+                exp_obj.new_label.value = value
+                return
+
         if isinstance(exp_obj, SelectPluginComponent):
             # this allows setting the selection directly without needing to access the underlying
             # .selected traitlet
             if isinstance(exp_obj, UnitSelectPluginComponent) and isinstance(value, u.Unit):
                 value = value.to_string()
+
             elif isinstance(exp_obj, SelectFileExtensionComponent):
-                if isinstance(value, int):
-                    # allow setting by index
-                    value = exp_obj.choices[exp_obj.indices.index(value)]
-                elif isinstance(value, str):
-                    # allow setting without index
-                    if value not in exp_obj.choices:
-                        value = exp_obj.choices[exp_obj.names.index(value)]
+                def to_choice_single(value):
+                    if isinstance(value, int):
+                        # allow setting by index
+                        return exp_obj.choices[exp_obj.indices.index(value)]
+                    elif isinstance(value, str):
+                        # allow setting without index, by: name or name,ver or [name,ver]
+                        if value not in exp_obj.choices:
+                            value_no_brackets = value.strip('[]')
+                            for attr in ('names', 'name_vers'):
+                                if value_no_brackets in getattr(exp_obj, attr):
+                                    index = getattr(exp_obj, attr).index(value_no_brackets)
+                                    return exp_obj.choices[index]
+                        return value
+                    else:
+                        raise ValueError(f"Invalid value type: {type(value)}")
+                if isinstance(value, (list, tuple)):
+                    # allow setting by list of indices or names
+                    value = [to_choice_single(v) for v in value]
+                else:
+                    # allow setting by single index or name
+                    value = to_choice_single(value)
             exp_obj.selected = value
             return
+
         elif isinstance(exp_obj, AddResults):
             exp_obj.auto_label.value = value
             return
+
         elif isinstance(exp_obj, AutoTextField):
+            if value != exp_obj.default:
+                exp_obj.auto = False
             exp_obj.value = value
             return
+
         elif isinstance(exp_obj, PlotOptionsSyncState):
             if not len(exp_obj.linked_states):
                 raise ValueError("there are currently no synced glue states to set")
@@ -193,8 +231,31 @@ class ImporterUserApi(UserApiWrapper):
     """
     def __init__(self, importer, expose=[], readonly=[], excl_from_dict=[], deprecated=[]):
         expose = list(set(list(expose) + ['input', 'output', 'target', 'show']))
-        if hasattr(importer, 'data_label'):
-            expose += ['data_label']
+        for attr in ('viewer', 'viewer_label', 'data_label'):
+            if hasattr(importer, attr):
+                expose += [attr]
+        super().__init__(importer, expose, readonly, excl_from_dict, deprecated)
+
+    def __call__(self, *args, **kwargs):
+        return self._obj(*args, **kwargs)
+
+    def __repr__(self):
+        return f'<{self._obj._registry_label} API>'
+
+
+class ViewerCreatorUserApi(UserApiWrapper):
+    """
+    This is an API wrapper around an internal new viewer creator.  For a full list
+    of attributes/methods, call dir(viewer_creator_object) and for help on any of
+    those methods, call ``help(viewer_creator_object.attribute)``.
+
+    For example::
+
+      help(viewer_creator_object.show)
+    """
+    def __init__(self, importer, expose=[], readonly=[], excl_from_dict=[], deprecated=[]):
+        expose = list(set(list(expose) + ['dataset', 'viewer_label',
+                                          'show', 'open_in_tray', 'close_in_tray']))
         super().__init__(importer, expose, readonly, excl_from_dict, deprecated)
 
     def __call__(self):

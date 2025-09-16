@@ -4,7 +4,7 @@ from astropy import units as u
 from bqplot import LinearScale
 from bqplot.marks import Lines, Label, Scatter
 from glue.core import HubListener
-from specutils import Spectrum1D
+from specutils import Spectrum
 
 from jdaviz.core.events import GlobalDisplayUnitChanged
 from jdaviz.core.events import (SliceToolStateMessage, LineIdentifyMessage,
@@ -21,7 +21,8 @@ __all__ = ['OffscreenLinesMarks', 'BaseSpectrumVerticalLine', 'SpectralLine',
            'LineAnalysisContinuum', 'LineAnalysisContinuumCenter',
            'LineAnalysisContinuumLeft', 'LineAnalysisContinuumRight',
            'LineUncertainties', 'ScatterMask', 'SelectedSpaxel', 'MarkersMark',
-           'CatalogMark', 'FootprintOverlay', 'ApertureMark']
+           'CatalogMark', 'FootprintOverlay', 'ApertureMark', 'DistanceMeasurement',
+           'DistanceLabel']
 
 accent_color = "#c75d2c"
 
@@ -176,12 +177,16 @@ class PluginMark:
     def set_x_unit(self, unit=None):
         if unit is None:
             if not hasattr(self.viewer.state, 'x_display_unit'):
-                if self.viewer.data() and hasattr(self.viewer.data()[0], 'spectral_axis'):
+                if isinstance(self.viewer, ('Spectrum2DViewer', 'MosvizProfile2DView')):
+                    # x-unit of 2d spectrum viewers are always in pixels
+                    unit = u.pix
+                elif self.viewer.data() and hasattr(self.viewer.data()[0], 'spectral_axis'):
                     unit = self.viewer.data()[0].spectral_axis.unit
                 else:
                     return
             else:
                 unit = self.viewer.state.x_display_unit
+
         unit = u.Unit(unit)
 
         if self.xunit is not None and not np.all([s == 0 for s in self.x.shape]):
@@ -193,12 +198,16 @@ class PluginMark:
     def set_y_unit(self, unit=None):
         if unit is None:
             if not hasattr(self.viewer.state, 'y_display_unit'):
-                if self.viewer.data() and hasattr(self.viewer.data()[0], 'flux'):
+                if isinstance(self.viewer, ('Spectrum2DViewer', 'MosvizProfile2DView')):
+                    # y-unit of 2d spectrum viewers are always in pixels
+                    unit = u.pix
+                elif self.viewer.data() and hasattr(self.viewer.data()[0], 'flux'):
                     unit = self.viewer.data()[0].flux.unit
                 else:
                     return
             else:
                 unit = self.viewer.state.y_display_unit
+
         unit = u.Unit(unit)
 
         # spectrum y-values in viewer have already been converted, don't convert again
@@ -208,41 +217,58 @@ class PluginMark:
             return
 
         if self.yunit is not None and not np.all([s == 0 for s in self.y.shape]):  # noqa
-
-            if self.viewer.default_class is Spectrum1D:
+            if self.viewer.default_class is Spectrum:
                 if self.xunit is None:
                     return
-                spec = self.viewer.state.reference_data.get_object(cls=Spectrum1D)
+                spec = self.viewer.state.reference_data.get_object(cls=Spectrum)
 
                 pixar_sr = spec.meta.get('PIXAR_SR', None)
-                cube_wave = self.x * self.xunit
-                equivs = all_flux_unit_conversion_equivs(pixar_sr, cube_wave)
+                # if x is all the same value, then we either have a vertical line mark or
+                # a flat spectrum, in either case we can use a single value for the spectral
+                # density equivalency.
+                if len(np.unique(self.x)) == 1 and (len(self.x) != len(self.y)):
+                    wave = self.x[0] * self.xunit
+                else:
+                    wave = self.x * self.xunit
+                equivs = all_flux_unit_conversion_equivs(pixar_sr, wave)
                 y = flux_conversion_general(self.y, self.yunit, unit,
                                             equivs, with_unit=False)
+
             self.y = y
 
         self.yunit = unit
 
     def _on_global_display_unit_changed(self, msg):
+
         if not self.auto_update_units:
             return
-        if self.viewer.__class__.__name__ in ['Spectrum1DViewer',
+
+        unit = msg.unit
+        if (msg.axis in ('spectral', 'spectral_y') and
+                self.viewer.__class__.__name__ in ('Spectrum2DViewer',
+                                                   'MosvizProfile2DView')):
+            # then we want to ignore the change to spectral unit as these viewers
+            # are always in pixel units on the x-axis
+            unit = u.pix
+
+        if self.viewer.__class__.__name__ in ('Spectrum1DViewer',
                                               'Spectrum2DViewer',
                                               'CubevizProfileView',
                                               'MosvizProfileView',
-                                              'MosvizProfile2DView']:
+                                              'MosvizProfile2DView'):
+
             axis_map = {'spectral': 'x', 'spectral_y': 'y'}
         else:
             return
         axis = axis_map.get(msg.axis, None)
         if axis is not None:
             scale = self.scales.get(axis, None)
-            # if PluginMark mark is LinearScale(0, 1), prevent it from entering unit conversion
+            # if PluginMark mark is LinearScale prevent it from entering unit conversion
             # machinery so it maintains it's position in viewer.
             if isinstance(scale, LinearScale) and (scale.min, scale.max) == (0, 1):
                 return
 
-            getattr(self, f'set_{axis}_unit')(msg.unit)
+            getattr(self, f'set_{axis}_unit')(unit)
 
     def clear(self):
         self.update_xy([], [])
@@ -270,7 +296,7 @@ class BaseSpectrumVerticalLine(Lines, PluginMark, HubListener):
         if reference_data is None or self.viewer.jdaviz_app.config == 'rampviz':
             return
 
-        self._update_unit(reference_data.get_object(cls=Spectrum1D).spectral_axis.unit)
+        self._update_unit(reference_data.get_object(cls=Spectrum).spectral_axis.unit)
 
     def _update_unit(self, new_unit):
         # the x-units may have changed.  We want to convert the internal self.x
@@ -746,3 +772,165 @@ class HistogramMark(Lines):
         line_style = "solid"
         super().__init__(x=min_max_value, y=y, scales=scales, colors=colors, line_style=line_style,
                          **kwargs)
+
+
+class DistanceLabel(Label, PluginMark, HubListener):
+    """A specialized bqplot Label for use with the DistanceMeasurement tool.
+
+    This class inherits from the Jdaviz PluginMark to integrate with the
+    application's hub and event system, but overrides the unit conversion
+    methods to prevent the label's pixel-based coordinates from being
+    erroneously converted.
+    """
+
+    def __init__(self, viewer, x, y, text, **kwargs):
+        self.viewer = viewer
+        kwargs.setdefault('align', 'middle')
+        kwargs.setdefault('baseline', 'middle')
+        kwargs.setdefault('x_offset', 0)
+        kwargs.setdefault('y_offset', 0)
+
+        super().__init__(x=x, y=y, text=[text], scales=viewer.scales, **kwargs)
+        self.auto_update_units = True
+
+    def update_position(self, x, y, text):
+        self.x = x
+        self.y = y
+        self.text = [text]
+
+
+class DistanceLine(PluginLine):
+    # We just want to be able to check for this specific line
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+
+class DistanceMeasurement:
+    """A composite mark that displays a line between two points with a
+    dynamically rotated and offset label showing the distance.
+
+    This class manages a collection of bqplot marks (a Line and two Labels
+    for text and its halo) to create a single, cohesive measurement indicator
+    in a viewer. The core logic in the `update_points` method handles the
+    positioning, rotation, and offsetting of the label to ensure it remains
+    parallel to the line while avoiding intersection.
+    """
+
+    def __init__(self, viewer, x=[], y=[], text=""):
+        self.viewer = viewer
+        self.endpoints = None
+        self.auto_update_units = True
+
+        self.line = DistanceLine(
+            viewer,
+            x=x,
+            y=y,
+            scales=viewer.scales,
+            colors=[accent_color],
+            stroke_width=2
+        )
+
+        anchor_x, anchor_y = (x[0] + x[1]) / 2, (y[0] + y[1]) / 2
+
+        self.label_shadow = DistanceLabel(
+            viewer, [anchor_x], [anchor_y], text,
+            colors=['white'],
+            stroke='white',
+            stroke_width=5,
+            font_weight='bold',
+            default_size=15
+        )
+
+        self.label_text = DistanceLabel(
+            viewer, [anchor_x], [anchor_y], text,
+            colors=[accent_color],
+            font_weight='bold',
+            default_size=15
+        )
+
+        self.visible = True
+        self.update_points(x[0], y[0], x[1], y[1], text)
+        self.auto_update_units = True
+
+    @property
+    def marks(self):
+        # The shadow must be listed before the text to be drawn underneath.
+        return [self.line, self.label_shadow, self.label_text]
+
+    @property
+    def visible(self):
+        return self.line.visible
+
+    @visible.setter
+    def visible(self, visible):
+        # Update visibility for all marks.
+        self.line.visible = visible
+        self.label_shadow.visible = visible
+        self.label_text.visible = visible
+
+    def update_points(self, x0, y0, x1, y1, text=""):
+        x0_v = getattr(x0, 'value', x0)
+        y0_v = getattr(y0, 'value', y0)
+        x1_v = getattr(x1, 'value', x1)
+        y1_v = getattr(y1, 'value', y1)
+
+        self.line.x = [x0_v, x1_v]
+        self.line.y = [y0_v, y1_v]
+
+        mid_x = (x0_v + x1_v) / 2
+        mid_y = (y0_v + y1_v) / 2
+
+        dx_data = x1_v - x0_v
+        dy_data = y1_v - y0_v
+
+        angle_rad = np.arctan2(-dy_data, dx_data)
+        angle_deg = np.rad2deg(angle_rad)
+
+        # Check for the special case of a perfect diagonal line.
+        # A small tolerance is used for floating-point comparison.
+        if abs(abs(dx_data) - abs(dy_data)) < 1e-9:
+            x_offset_float = 0
+            y_offset_float = 30
+
+        else:
+            offset_distance = 10
+            line_length_data = np.sqrt(dx_data**2 + dy_data**2)
+
+            if line_length_data > 0:
+                perp_dx = -dy_data
+                perp_dy = dx_data
+                x_offset_float = (perp_dx / line_length_data) * offset_distance
+                y_offset_float = (perp_dy / line_length_data) * offset_distance
+            else:
+                x_offset_float = 0
+                y_offset_float = -offset_distance
+
+            # Determine text offset direction based on the center of the viewer
+            x_scale = self.viewer.scales.get('x')
+            y_scale = self.viewer.scales.get('y')
+
+            # Check if the viewer scales and their min/max values are available
+            if (x_scale is not None and y_scale is not None and
+                    x_scale.min is not None and x_scale.max is not None and
+                    y_scale.min is not None and y_scale.max is not None):
+
+                viewer_center_x = (x_scale.min + x_scale.max) / 2
+                viewer_center_y = (y_scale.min + y_scale.max) / 2
+                pos_vec_x = mid_x - viewer_center_x
+                pos_vec_y = mid_y - viewer_center_y
+                if (pos_vec_x * perp_dx + pos_vec_y * perp_dy) > 0:
+                    x_offset_float *= -1
+                    y_offset_float *= -1
+
+        x_offset_int = int(round(x_offset_float))
+        y_offset_int = int(round(y_offset_float))
+
+        # Normalize the display angle for readability
+        if abs(angle_deg) > 90:
+            angle_deg -= 180 * np.sign(angle_deg)
+
+        for label in (self.label_shadow, self.label_text):
+            label.update_position([mid_x], [mid_y], text)
+            label.rotate_angle = angle_deg
+            label.x_offset = x_offset_int
+            label.y_offset = -y_offset_int

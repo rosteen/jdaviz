@@ -1,5 +1,5 @@
 from functools import cached_property
-from specutils import Spectrum1D, SpectrumList
+from specutils import Spectrum, SpectrumList
 
 from jdaviz.core.loaders.parsers import BaseParser
 from jdaviz.core.registries import loader_parser_registry
@@ -10,7 +10,7 @@ __all__ = ['SpecutilsSpectrumParser', 'SpecutilsSpectrumListParser']
 
 @loader_parser_registry('specutils.Spectrum')
 class SpecutilsSpectrumParser(BaseParser):
-    SpecutilsCls = Spectrum1D
+    SpecutilsCls = Spectrum
 
     @property
     def is_valid(self):
@@ -38,3 +38,7 @@ class SpecutilsSpectrumListParser(SpecutilsSpectrumParser):
             # NOTE: temporary during deconfig process
             return False
         return super().is_valid and len(self.output) > 1
+
+    @cached_property
+    def output(self):
+        return self.SpecutilsCls.read(self.input, flux_col='flux')

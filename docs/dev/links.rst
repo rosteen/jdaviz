@@ -4,15 +4,15 @@
 Linking of datasets in glue
 ***************************
 
-.. note:: The glue documentation includes a page about
+.. note:: The ``glue`` documentation includes a page about
           `linking <http://docs.glueviz.org/en/stable/developer_guide/linking.html>`_ but
-          the present page should be considered a
-          more up-to-date guide with a focus on links useful to Jdaviz.
+          the present page is intended to provide a more focused description of the
+          the linking mechanisms used by Jdaviz.
 
 The 'why' of linking
 ====================
 
-Why is linking needed in the first place? Linking in glue is a way
+Why is linking needed in the first place? Linking in ``glue`` is a way
 to describe the relationship between datasets, with two main goals: to know how
 to overplot datasets, and to know how to apply a subset defined in one dataset
 (such as a spectral range) to another dataset. Having linking means being able
@@ -84,7 +84,7 @@ in another dataset.
 Linking by WCS
 ==============
 
-There are two main ways of linking by WCS, as follow.
+There are two main ways of linking by WCS, as follows.
 
 Using WCSLink (recommended)
 ---------------------------

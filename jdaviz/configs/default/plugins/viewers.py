@@ -1,4 +1,4 @@
-from echo import delay_callback
+from echo import delay_callback, CallbackProperty
 
 import numpy as np
 
@@ -8,6 +8,7 @@ from glue.core.exceptions import IncompatibleAttribute
 from glue.core.subset import Subset
 from glue.core.subset_group import GroupedSubset
 from glue.viewers.scatter.state import ScatterLayerState as BqplotScatterLayerState
+from glue.utils import avoid_circular
 
 from glue_astronomy.spectral_coordinates import SpectralCoordinates
 from glue_jupyter.bqplot.profile import BqplotProfileView
@@ -19,7 +20,7 @@ from astropy import units as u
 from astropy.nddata import (
     NDDataArray, StdDevUncertainty, VarianceUncertainty, InverseVariance
 )
-from specutils import Spectrum1D
+from specutils import Spectrum
 
 from jdaviz.components.toolbar_nested import NestedJupyterToolbar
 from jdaviz.configs.default.plugins.data_menu import DataMenu
@@ -35,7 +36,7 @@ from jdaviz.core.unit_conversion_utils import (check_if_unit_is_per_solid_angle,
                                                flux_conversion_general,
                                                all_flux_unit_conversion_equivs)
 from jdaviz.utils import (ColorCycler, get_subset_type, _wcs_only_label,
-                          layer_is_image_data, layer_is_not_dq)
+                          layer_is_image_data, layer_is_not_dq, layer_is_3d)
 
 uncertainty_str_to_cls_mapping = {
     "std": StdDevUncertainty,
@@ -133,6 +134,21 @@ class JdavizViewerMixin(WithCache):
 
     def _get_clone_viewer_reference(self):
         return self.jdaviz_helper._get_clone_viewer_reference(self.reference)
+
+    def _clone_viewer_outside_app(self):
+        new_viewer = type(self)(session=self.session)
+        # TODO: this is needed for jdaviz only, without it it should also
+        # work for glue-jupyter
+        new_viewer._reference_id = self.reference_id + "_TODO_IS_THIS_OK?"
+        d = self.state.as_dict()
+        new_viewer.state.update_from_dict(d)
+
+        for layer in self.layers:
+            layer_state = layer.state
+            new_layer = type(layer)(view=new_viewer, viewer_state=new_viewer.state,
+                                    layer_state=layer_state)
+            new_layer.update()
+        return new_viewer
 
     def clone_viewer(self):
         name = self.jdaviz_helper._get_clone_viewer_reference(self.reference)
@@ -271,6 +287,13 @@ class JdavizViewerMixin(WithCache):
             # whenever as_steps changes, we need to redraw the uncertainties (if enabled)
             layer_state.add_callback('as_steps', self._show_uncertainty_changed)
 
+        # use echo-validator to ensure visible sets & updates properly in plot options & data menu
+        if (hasattr(layer_state, 'visible') and get_subset_type(layer_state.layer) != 'spatial'):
+            layer_state.layer.visible = CallbackProperty()
+            layer_state.add_callback('layer',
+                                     self._expected_subset_layer_default,
+                                     validator=True)
+
     def _expected_subset_layer_default(self, layer_state):
         if self.__class__.__name__ == 'RampvizImageView':
             # Do not override default for subsets as for some reason
@@ -342,6 +365,7 @@ class JdavizViewerMixin(WithCache):
 
         self._data_menu.visible_layers = visible_layers
 
+    @avoid_circular
     def _on_layers_update(self, layers=None):
         if self.__class__.__name__ == 'MosvizTableViewer':
             # MosvizTableViewer uses this as a mixin, but we do not need any of this layer
@@ -434,6 +458,21 @@ class JdavizViewerMixin(WithCache):
         visible_layers = [layer for layer in self.state.layers
                           if (layer.visible and
                               layer_is_image_data(layer.layer) and
+                              layer_is_not_dq(layer.layer) and
+                              (getattr(layer, 'bitmap_visible', False) or
+                               getattr(layer, 'contour_visible', False)))]
+        if len(visible_layers) == 0:
+            return None
+
+        return visible_layers[-1]
+
+    @property
+    def active_cube_layer(self):
+        """Active cube layer in the viewer, if available."""
+        # Find visible layers
+        visible_layers = [layer for layer in self.state.layers
+                          if (layer.visible and
+                              layer_is_3d(layer.layer) and
                               layer_is_not_dq(layer.layer) and
                               (layer.bitmap_visible or layer.contour_visible))]
         if len(visible_layers) == 0:
@@ -542,7 +581,7 @@ class JdavizProfileView(JdavizViewerMixin, BqplotProfileView):
                             layer_data = self.jdaviz_app._get_object_cache[cache_key]
                         else:
                             # If spectrum, collapse via the defined statistic
-                            if _class == Spectrum1D:
+                            if _class == Spectrum:
                                 layer_data = lyr.get_object(cls=_class, statistic=statistic)
                             else:
                                 layer_data = lyr.get_object(cls=_class)
@@ -635,13 +674,13 @@ class JdavizProfileView(JdavizViewerMixin, BqplotProfileView):
                                             data.get_component('flux').data.units,
                                             self.state.y_display_unit,
                                             equivalencies=eqv)
-            except Exception as err:
+            except Exception as e:
                 # Raising exception here introduces a dirty state that messes up next load_data
                 # but not raising exception also causes weird behavior unless we remove the data
                 # completely.
                 self.session.hub.broadcast(SnackbarMessage(
-                    f"Failed to load {data.label}, so removed it: {repr(err)}",
-                    sender=self, color='error'))
+                    f"Failed to load {data.label}, so removed it: {repr(e)}",
+                    sender=self, color='error', traceback=e))
                 self.jdaviz_app.data_collection.remove(data)
                 return False
             reset_plot_axes = False
@@ -701,7 +740,7 @@ class JdavizProfileView(JdavizViewerMixin, BqplotProfileView):
 
                 data_obj = lyr.data.get_object(cls=self.default_class)
 
-                if self.default_class == Spectrum1D:
+                if self.default_class == Spectrum:
                     data_x = data_obj.spectral_axis.value
                     data_y = data_obj.flux.value
                 else:
@@ -754,26 +793,34 @@ class JdavizProfileView(JdavizViewerMixin, BqplotProfileView):
                 uncert_cls = uncertainty_str_to_cls_mapping[uncertainty_type_str]
                 error = uncert_cls(error).represent_as(StdDevUncertainty).array
 
-                # Then we assume that last axis is always wavelength.
-                # This may need adjustment after the following
-                # specutils PR is merged: https://github.com/astropy/specutils/pull/1033
-                spectral_axis = -1
+                if 'spectral_axis_index' in lyr.data.meta:
+                    spectral_axis_index = lyr.data.meta['spectral_axis_index']
+                else:
+                    # We have to make an assumption in this case.
+                    # TODO: Should we have other handling for non-spectral data (e.g. light curves?)
+                    spectral_axis_index = -1
+
                 data_obj = lyr.data.get_object(cls=self.default_class, statistic=None)
 
-                if isinstance(lyr.data.coords, SpectralCoordinates):
-                    spectral_wcs = lyr.data.coords
+                lyr_coords = lyr.data.coords
+
+                if isinstance(lyr_coords, SpectralCoordinates):
+                    spectral_wcs = lyr_coords
                     data_x = spectral_wcs.pixel_to_world_values(
-                        np.arange(lyr.data.shape[spectral_axis])
+                        np.arange(lyr.data.shape[spectral_axis_index])
                     )
                     if isinstance(data_x, tuple):
                         data_x = data_x[0]
                 else:
-                    if hasattr(lyr.data.coords, 'spectral_wcs'):
-                        spectral_wcs = lyr.data.coords.spectral_wcs
-                    elif hasattr(lyr.data.coords, 'spectral'):
-                        spectral_wcs = lyr.data.coords.spectral
+                    if hasattr(lyr_coords, 'spectral_wcs'):
+                        spectral_wcs = lyr_coords.spectral_wcs
+                    elif hasattr(lyr_coords, 'spectral'):
+                        spectral_wcs = lyr_coords.spectral
+                    elif hasattr(lyr_coords, "world_n_dim") and lyr_coords.world_n_dim == 1:
+                        # 1D GWCS in this case, just use the coords
+                        spectral_wcs = lyr_coords
                     data_x = spectral_wcs.pixel_to_world(
-                        np.arange(lyr.data.shape[spectral_axis])
+                        np.arange(lyr.data.shape[spectral_axis_index])
                     )
 
                 data_y = data_obj.data

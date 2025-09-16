@@ -113,7 +113,8 @@ def find_closest_polygon_point(px, py, polygons):
     return closest_overlay, closest_point
 
 
-@tray_registry('imviz-footprints', label="Footprints")
+@tray_registry('imviz-footprints', label="Footprints",
+               category='data:analysis')
 class Footprints(PluginTemplateMixin, ViewerSelectMixin, HasFileImportSelect):
     """
     See the :ref:`Footprints Plugin Documentation <imviz-footprints>` for more details.
@@ -203,7 +204,7 @@ class Footprints(PluginTemplateMixin, ViewerSelectMixin, HasFileImportSelect):
 
         self.viewer.multiselect = True  # multiselect always enabled
         # require a viewer's reference data to have WCS so that footprints can be mapped to sky
-        self.viewer.add_filter('reference_has_wcs')
+        self.viewer.add_filter('is_image_viewer', 'reference_has_wcs')
 
         self.overlay = EditableSelectPluginComponent(self,
                                                      name='overlay',
@@ -253,6 +254,8 @@ class Footprints(PluginTemplateMixin, ViewerSelectMixin, HasFileImportSelect):
         self.hub.subscribe(self, FootprintSelectClickEventMessage,
                            handler=self._on_select_footprint_overlay)
         self._on_link_type_updated()
+
+        self.observe_traitlets_for_relevancy(traitlets_to_observe=['viewer_items'])
 
     def _highlight_overlay(self, overlay_label, viewers=None):
         """

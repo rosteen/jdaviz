@@ -8,9 +8,10 @@ from astropy.utils.data import download_file
 import numpy as np
 from packaging.version import Version
 from specreduce import tracing, background, extract
-from specutils import Spectrum1D
+from specutils import Spectrum
 
 from jdaviz.core.custom_units_and_equivs import SPEC_PHOTON_FLUX_DENSITY_UNITS
+from jdaviz.utils import cached_uri
 
 GWCS_LT_0_18_1 = Version(gwcs.__version__) < Version('0.18.1')
 
@@ -25,14 +26,16 @@ def test_plugin(specviz2d_helper):
 
     specviz2d_helper.load_data(spectrum_2d=fn)
 
-    pext = specviz2d_helper.app.get_tray_item_from_name('spectral-extraction')
+    pext = specviz2d_helper.app.get_tray_item_from_name('spectral-extraction-2d')
 
     # test trace marks - won't be created until after opening the plugin
     sp2dv = specviz2d_helper.app.get_viewer('spectrum-2d-viewer')
-    assert len(sp2dv.figure.marks) == 3
+    # includes 2 hidden marks from cross-dispersion profile plugin
+    assert len(sp2dv.figure.marks) == 5
 
     pext.keep_active = True
-    assert len(sp2dv.figure.marks) == 12
+    # includes 2 hidden marks from cross-dispersion profile plugin
+    assert len(sp2dv.figure.marks) == 14
     assert pext.marks['trace'].marks_list[0].visible is True
     assert len(pext.marks['trace'].marks_list[0].x) > 0
 
@@ -73,7 +76,8 @@ def test_plugin(specviz2d_helper):
     # TODO: Investigate extra hidden mark from glue-jupyter, see
     # https://github.com/spacetelescope/jdaviz/pull/2478#issuecomment-1731864411
     # 3 new trace objects should have been loaded and plotted in the spectrum-2d-viewer
-    assert len(sp2dv.figure.marks) in [16, 18]
+    # and there are 2 invisible marks from the cross-dispersion profile plugin
+    assert len(sp2dv.figure.marks) in [18, 20]
 
     # interact with background section, check marks
     pext.trace_trace_selected = 'New Trace'
@@ -111,11 +115,11 @@ def test_plugin(specviz2d_helper):
     pext.import_bg(bg)
     assert pext.bg_width == 4
     bg_img = pext.export_bg_img()
-    assert isinstance(bg_img, Spectrum1D)
+    assert isinstance(bg_img, Spectrum)
     bg_spec = pext.export_bg_spectrum()
-    assert isinstance(bg_spec, Spectrum1D)
+    assert isinstance(bg_spec, Spectrum)
     bg_sub = pext.export_bg_sub()
-    assert isinstance(bg_sub, Spectrum1D)
+    assert isinstance(bg_sub, Spectrum)
 
     # interact with extraction section, check marks
     pext.ext_width = 1
@@ -133,11 +137,11 @@ def test_plugin(specviz2d_helper):
     pext.import_extract(ext)
     assert pext.ext_width == 2
     sp_ext = pext.export_extract_spectrum()
-    assert isinstance(sp_ext, Spectrum1D)
+    assert isinstance(sp_ext, Spectrum)
 
     pext.ext_type_selected = 'Horne'
     sp_ext = pext.export_extract_spectrum()
-    assert isinstance(sp_ext, Spectrum1D)
+    assert isinstance(sp_ext, Spectrum)
 
     # test API calls
     for step in ['trace', 'bg', 'ext']:
@@ -156,6 +160,23 @@ def test_plugin(specviz2d_helper):
     with pytest.raises(ValueError):
         pext.export_extract(invalid_kwarg=5)
 
+    # test importing traces
+    img = specviz2d_helper.get_data('Spectrum 2D')
+    flat_trace = tracing.FlatTrace(img, trace_pos=25)
+    fit_trace = tracing.FitTrace(img)
+
+    for imported_trace in [flat_trace, fit_trace]:
+        pext.import_trace(imported_trace)
+        exported_trace = pext.export_trace(add_data=False)
+        assert isinstance(exported_trace, type(imported_trace))
+
+    # array trace needs to go through loader, uncomment after JDAT-5518
+    array_trace = tracing.ArrayTrace(img, np.arange(len(img.spectral_axis)))
+    specviz2d_helper.load(array_trace, data_label='array_trace')
+    pext.trace_trace.selected = 'array_trace'
+    exported_trace = pext.export_trace(add_data=False)
+    assert isinstance(exported_trace, tracing.ArrayTrace)
+
 
 @pytest.mark.remote_data
 @pytest.mark.filterwarnings('ignore')
@@ -164,7 +185,7 @@ def test_user_api(specviz2d_helper):
 
     specviz2d_helper.load_data(spectrum_2d=fn)
 
-    pext = specviz2d_helper.plugins['Spectral Extraction']
+    pext = specviz2d_helper.plugins['2D Spectral Extraction']
     pext.keep_active = True
 
     # test that setting a string to an AddResults object redirects to the label
@@ -183,14 +204,23 @@ def test_user_api(specviz2d_helper):
 
 @pytest.mark.remote_data
 @pytest.mark.skipif(GWCS_LT_0_18_1, reason='Needs GWCS 0.18.1 or later')
-def test_spectrum_on_top(specviz2d_helper):
-    fn = download_file('https://mast.stsci.edu/api/v0.1/Download/file/?uri=mast:jwst/product/jw01538-o161_s000000001_nirspec_f290lp-g395h-s1600a1_s2d.fits', cache=True)  # noqa
+@pytest.mark.filterwarnings("ignore::astropy.wcs.wcs.FITSFixedWarning")
+def test_background_extraction_and_display(specviz2d_helper):
+    uri = 'mast:jwst/product/jw01538-o161_t002-s000000001_nirspec_f290lp-g395h-s1600a1_s2d.fits'
+    specviz2d_helper.load_data(spectrum_2d=cached_uri(uri), cache=True)
+    pext = specviz2d_helper.app.get_tray_item_from_name('spectral-extraction-2d')
 
-    specviz2d_helper.load_data(spectrum_2d=fn)
-
-    pext = specviz2d_helper.app.get_tray_item_from_name('spectral-extraction')
+    # check that the background extraction method and parameters are as expected
     assert pext.bg_type_selected == 'TwoSided'
     np.testing.assert_allclose(pext.bg_separation, 6)
+
+    # test extracting background and background subtracted images and adding
+    # them to the viewer
+    pext.export_bg_sub(add_data=True)
+    assert specviz2d_helper.app.data_collection[2].label == 'background-subtracted'
+
+    pext.export_bg_img(add_data=True)
+    assert specviz2d_helper.app.data_collection[3].label == 'background'
 
 
 @pytest.mark.filterwarnings('ignore')
@@ -208,12 +238,12 @@ def test_horne_extract_self_profile(specviz2d_helper):
         spec2d[:, ii] = gaus
 
     wave = np.arange(0, spec2d.shape[1], 1)
-    objectspec = Spectrum1D(spectral_axis=wave*u.m,
-                            flux=spec2d*u.Jy,
-                            uncertainty=VarianceUncertainty(spec2dvar*u.Jy*u.Jy))
+    objectspec = Spectrum(spectral_axis=wave*u.m,
+                          flux=spec2d*u.Jy,
+                          uncertainty=VarianceUncertainty(spec2dvar*u.Jy*u.Jy))
 
     specviz2d_helper.load_data(objectspec)
-    pext = specviz2d_helper.plugins['Spectral Extraction']._obj
+    pext = specviz2d_helper.plugins['2D Spectral Extraction']._obj
 
     trace_fit = tracing.FitTrace(objectspec,
                                  trace_model=models.Polynomial1D(degree=1),
@@ -272,9 +302,10 @@ def test_spectral_extraction_flux_unit_conversions(specviz2d_helper, mos_spectru
     specviz2d_helper.load_data(mos_spectrum2d)
 
     uc = specviz2d_helper.plugins["Unit Conversion"]
-    pext = specviz2d_helper.plugins['Spectral Extraction']
+    pext = specviz2d_helper.plugins['2D Spectral Extraction']
 
     for new_flux_unit in SPEC_PHOTON_FLUX_DENSITY_UNITS:
+
         # iterate through flux units verifying that selected object/spectrum is obtained using
         # display units
         uc.flux_unit.selected = new_flux_unit

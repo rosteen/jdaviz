@@ -9,7 +9,7 @@ from jdaviz.core.user_api import PluginUserApi
 __all__ = ['Compass']
 
 
-@tray_registry('imviz-compass', label="Compass")
+@tray_registry('imviz-compass', label="Compass", category="data:reduction")
 class Compass(PluginTemplateMixin, ViewerSelectMixin):
     """
     See the :ref:`Compass Plugin Documentation <imviz-compass>` for more details.
@@ -35,11 +35,15 @@ class Compass(PluginTemplateMixin, ViewerSelectMixin):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
+        self.viewer.add_filter('is_image_viewer')
+
         # description displayed under plugin title in tray
         self._plugin_description = 'Show active data label, compass, and zoom box.'
 
         self.hub.subscribe(self, AddDataMessage, handler=self._on_viewer_data_changed)
         self.hub.subscribe(self, RemoveDataMessage, handler=self._on_viewer_data_changed)
+
+        self.observe_traitlets_for_relevancy(traitlets_to_observe=['viewer_items'])
 
     @property
     def user_api(self):

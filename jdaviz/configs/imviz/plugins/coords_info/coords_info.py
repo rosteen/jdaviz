@@ -65,6 +65,7 @@ class CoordsInfo(TemplateMixin, DatasetSelectMixin):
         super().__init__(*args, **kwargs)
         self._marks = {}
         self._dict = {}  # dictionary representation of current mouseover info
+        self._spectral_axis_index = 2  # Needed for cube data
         self._x, self._y = None, None  # latest known cursor positions
         self.image_unit = None
 
@@ -272,7 +273,10 @@ class CoordsInfo(TemplateMixin, DatasetSelectMixin):
         # return the indices in image.shape for the x and y dimension, respectively
         if image.ndim == 3:
             # cubeviz case
-            return (0, 1)  # (ix_shape, iy_shape)
+            if self._spectral_axis_index == 0:
+                return (2, 1)
+            else:
+                return (0, 1)  # (ix_shape, iy_shape)
         elif image.ndim == 2:
             return (1, 0)  # (ix_shape, iy_shape)
         else:  # pragma: no cover
@@ -281,7 +285,10 @@ class CoordsInfo(TemplateMixin, DatasetSelectMixin):
     def _get_cube_value(self, image, arr, x, y, viewer):
         if image.ndim == 3:
             # cubeviz case:
-            return arr[int(round(x)), int(round(y)), viewer.state.slices[-1]]
+            if self._spectral_axis_index == 0:
+                return arr[viewer.state.slices[0], int(round(y)), int(round(x))]
+            else:
+                return arr[int(round(x)), int(round(y)), viewer.state.slices[-1]]
         elif image.ndim == 2:
             if isinstance(viewer, RampvizImageView):
                 x, y = y, x
@@ -384,10 +391,17 @@ class CoordsInfo(TemplateMixin, DatasetSelectMixin):
             else:
                 data_wcs = None
 
+            if "spectral_axis_index" in getattr(coo_data, "meta", {}):
+                self._spectral_axis_index = coo_data.meta["spectral_axis_index"]
+
             if data_wcs:
                 try:
                     if wcs_ndim == 3:
-                        sky = data_wcs.pixel_to_world(viewer.slice, y, x)[1].icrs
+                        if self._spectral_axis_index == 0:
+                            sky = data_wcs.pixel_to_world(x, y, viewer.slice)
+                        else:
+                            sky = data_wcs.pixel_to_world(viewer.slice, y, x)
+                        sky = [coord for coord in sky if hasattr(coord, "icrs")][0].icrs
                     else:  # wcs_ndim == 2
                         sky = data_wcs.pixel_to_world(x, y).icrs
                 except Exception:
@@ -536,15 +550,25 @@ class CoordsInfo(TemplateMixin, DatasetSelectMixin):
                     dq_value = dq_data[int(round(y)), int(round(x))]
 
                 unit = u.Unit(image.get_component(attribute).units)
-                if (isinstance(viewer, Spectrum2DViewer) and unit != ''
-                   and u.Unit(self.app._get_display_unit(attribute)).physical_type
-                   not in ['frequency', 'wavelength', 'length']
-                   and unit != self.app._get_display_unit(attribute)):
+                try:
+                    disp_unit = self.app._get_display_unit(attribute)
+                except IndexError:
+                    # no layers loaded, so no display unit set
+                    disp_unit = None
+                if (isinstance(viewer, (ImvizImageView, Spectrum2DViewer))
+                        and unit != '' and disp_unit is not None
+                        and u.Unit(self.app._get_display_unit(attribute)).physical_type
+                        not in ['frequency', 'wavelength', 'length']
+                        and unit != self.app._get_display_unit(attribute)):
                     to_unit = self.app._get_display_unit(attribute)
                     if (check_if_unit_is_per_solid_angle(unit) and attribute == 'flux'):
                         to_unit = self.app._get_display_unit('sb')
 
-                    equivalencies = all_flux_unit_conversion_equivs(cube_wave=wave)
+                    try:
+                        equivalencies = all_flux_unit_conversion_equivs(cube_wave=wave)
+                    except UnboundLocalError:
+                        # wave is not defined (image viewer without spectral axis)
+                        equivalencies = None
                     value = flux_conversion_general(value, unit,
                                                     to_unit,
                                                     equivalencies,

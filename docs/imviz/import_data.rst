@@ -50,8 +50,8 @@ to load regions from a ``.reg`` file; also see :ref:`imviz-import-regions-api`.
 
 Downloading data products through the Virtual Observatory
 ---------------------------------------------------------
-Imviz supports querying and loading data products from the `IVOA's Virtual Observatory <https://ivoa.net/>`_.
-The plugin will search for registered archives that have observations which intersect the circular field
+Imviz supports querying and loading data products from `IVOA's Virtual Observatory <https://ivoa.net/>`_.
+The plugin will search for registered archives with observations that intersect the circular field
 specified by the user.
 
 To search the VO, enter a source location and a radius around which to search. The source utilizes
@@ -68,8 +68,11 @@ field. To instead see all available archives on the IVOA registry, toggle the :g
     Some archives have not provided coverage information, and thus will be excluded from the results.
     If you are expecting an archive that does not appear, try disabling coverage filtering.
 
-Additionally, select the corresponding waveband of the archive you are looking for; this will limit the query to
-archives and services within your specified wavelength range. Waveband definitions can be found here.
+Additionally, select the corresponding waveband of the archive you are looking for;
+this will limit the query to
+archives and services within your specified wavelength range.
+Waveband definitions can be
+found `here <https://wiki.ivoa.net/internal/IVOA/IvoaUCD/NoteEMSpectrum-20040520.html>`_.
 
 After selecting the waveband, the plugin will query the VO registry for services that match the provided criteria.
 If coverage filtering is enabled, only archives and surveys that report coverage within the user's specified area
@@ -77,14 +80,14 @@ will be reported. Otherwise, the list will return all available archives and sur
 resource to query and press the :guilabel:`Query Archive` button to search your specified archive with your
 specific target.
 
-Once the query is complete, a table of results will be populated below, with the archive provided ``Title``,
+Once the query is complete, the table of results will be populated with the archive provided ``Title``,
 ``Date``, and ``Instrument`` of each result. Select your desired data products to load and click
 :guilabel:`Load Data` to download and import your selected data products to Imviz.
 
 .. note::
 
-    Currently only SIA 1.0 services are implemented. VO services which offer only SIA2 endpoints are not
-    supported.
+    Currently only `Simple Image Access specification (SIA) 1.0 <https://www.ivoa.net/documents/WD/SIA/sia-20040524.html#:~:text=Simple%20Image%20Access%20Specification%20Version,Image%20Generation>`_
+    services are implemented. VO services which offer only SIA2 endpoints are not supported.
 
 .. _imviz-virtual-observatory:
 
@@ -95,7 +98,7 @@ Alternatively, users who work in a coding environment like a Jupyter
 notebook can access the Imviz helper class API. Using this API, users can
 load data into the application through code with the
 :meth:`~jdaviz.configs.imviz.helper.Imviz.load_data`
-method, which takes as input either the name of a local file or an
+method, which takes as input either the name of a local file, 2D NumPy array, or an
 :class:`~astropy.nddata.NDData`, :class:`~astropy.io.fits.HDUList`,
 or :class:`~astropy.io.fits.ImageHDU` object.
 
@@ -168,9 +171,9 @@ In order to load Roman files, you will need to install the :ref:`optional-deps-r
 Batch Loading Multiple Images
 -----------------------------
 
-To save on performance while loading multiple images into Imviz, you can optionally use
-:meth:`~jdaviz.core.helpers.ConfigHelper.batch_load` to parse all of the data first (within a for
-loop or multiple calls to ``load_data``, for example), and defer the linking and loading of the new
+To save on performance while loading multiple images into Imviz, you can optionally use the
+:meth:`~jdaviz.core.helpers.ConfigHelper.batch_load` context manager to parse all of the data first (within a
+loop, for example, or multiple calls to ``load_data``), and defer the linking and loading of the new
 data entries into the viewer until after the parsing is complete::
 
     from jdaviz import Imviz
@@ -222,21 +225,21 @@ Importing catalogs via the API
 If you have a catalog file supported by `astropy.table.Table`, you
 can load the catalog into Imviz and add markers to Imviz viewers to show
 positions from the catalog. These markers are different than Imviz
-:ref:`spatial regions <imviz_defining_spatial_regions>` as they are only meant to mark catalog positions.
+:ref:`spatial regions <imviz-defining-spatial-regions>` as they are only meant to mark catalog positions.
 Loading markers can be done with the following commands:
 
 .. code-block:: python
 
     viewer = imviz.default_viewer
     viewer.marker = {'color': 'green', 'alpha': 0.8, 'markersize': 10, 'fill': False}
-    my_markers = Table.read('my_catalog.ecsv')
+    my_catalog = Table.read('my_catalog.ecsv')
     coord_i2d = Table({'coord': [SkyCoord(ra=my_catalog['sky_centroid'].ra.degree,
                                           dec=my_catalog['sky_centroid'].dec.degree,
                                           unit="deg")]})
     viewer.add_markers(coord_i2d, use_skycoord=True, marker_name='my_markers')
 
 If you have a large catalog, you might want to filter your table to the
-marks of interest before adding them to Imviz, in order to avoid performance
+marks of interest before adding them to Imviz to avoid performance
 issues associated with adding large numbers of markers. For instance, if your
 image has FITS WCS, you could use `astropy.wcs.WCS.footprint_contains` if you
 only want the marks within a footprint. Alternately, you could filter by
@@ -262,7 +265,7 @@ can load the regions into Imviz as follows:
 
 Unsupported regions will be skipped and trigger a warning. Those that
 failed to load, if any, can be returned as a list of tuples of the
-form ``(region, reason)``:
+form ``(region, reason)`` by specifying ``return_bad_regions=True``:
 
 .. code-block:: python
 

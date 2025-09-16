@@ -1,6 +1,5 @@
 import os
 
-import gwcs
 import numpy as np
 from astropy import units as u
 from astropy.coordinates import SkyCoord
@@ -88,7 +87,7 @@ class AstrowidgetsImageViewerMixin:
                 except NoConvergence as e:  # pragma: no cover
                     self.session.hub.broadcast(SnackbarMessage(
                         f'{point} is likely out of bounds: {repr(e)}',
-                        color="warning", sender=self))
+                        color="warning", sender=self, traceback=e))
                     return
             else:
                 raise AttributeError(f'{getattr(image, "label", None)} does not have a valid WCS')
@@ -496,15 +495,17 @@ class AstrowidgetsImageViewerMixin:
                 raise AttributeError(f'{getattr(image, "label", None)} does not have a valid WCS')
             sky = table[skycoord_colname]
             t_glue = Data(marker_name, ra=sky.ra.deg, dec=sky.dec.deg)
-            dcomps = image.components
-            if (isinstance(image.coords, gwcs.WCS) and
-                    image.coords.output_frame.reference_frame.name != 'galactic' and
-                    'Lon' in dcomps and 'Lat' in dcomps):
+
+            if (image.find_component_id('Lat') and image.find_component_id('Lon')):
                 ra_str = 'Lon'
                 dec_str = 'Lat'
-            else:
+            elif (image.find_component_id('Right Ascension')
+                  and image.find_component_id('Declination')):
                 ra_str = 'Right Ascension'
                 dec_str = 'Declination'
+            else:
+                raise ValueError("Image must contain either ('Lat', 'Lon') or "
+                                 "('Right Ascension', 'Declination') components.")
             with jglue.data_collection.delay_link_manager_update():
                 jglue.data_collection[marker_name] = t_glue
                 jglue.add_link(t_glue, 'ra', image, ra_str)
@@ -521,7 +522,7 @@ class AstrowidgetsImageViewerMixin:
         except Exception as e:  # pragma: no cover
             self.session.hub.broadcast(SnackbarMessage(
                 f"Failed to add markers '{marker_name}': {repr(e)}",
-                color="warning", sender=self))
+                color="warning", sender=self, traceback=e))
         else:
             # Only can set alpha and color using self.add_data(), so brute force here instead.
             # https://github.com/glue-viz/glue/issues/2201
@@ -564,7 +565,7 @@ class AstrowidgetsImageViewerMixin:
         except ValueError as e:  # pragma: no cover
             self.session.hub.broadcast(SnackbarMessage(
                 f"Failed to remove markers '{marker_name}': {repr(e)}",
-                color="warning", sender=self))
+                color="warning", sender=self, traceback=e))
             return
 
         data = self.session.application.data_collection[i]

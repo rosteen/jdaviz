@@ -10,13 +10,14 @@ from jdaviz import open as jdaviz_open
 from jdaviz.cli import ALL_JDAVIZ_CONFIGS
 from jdaviz.configs import Specviz2d, Cubeviz, Imviz, Specviz
 from jdaviz.core.launcher import Launcher, STATUS_HINTS
+from jdaviz.utils import cached_uri
 
 
 AUTOCONFIG_EXAMPLES = (
-    ("mast:JWST/product/jw02732-o004_t004_miri_ch1-short_x1d.fits", Specviz),
+    ("mast:JWST/product/jw02732004001_02103_00004_mirifushort_x1d.fits", Specviz),
     ("mast:JWST/product/jw01538160001_16101_00004_nrs1_s2d.fits", Specviz2d),
     ("mast:JWST/product/jw02727-o002_t062_nircam_clear-f090w_i2d.fits", Imviz),
-    ("mast:JWST/product/jw02732-o004_t004_miri_ch1-short_s3d.fits", Cubeviz),
+    ("mast:JWST/product/jw02732004001_02103_00004_mirifushort_s3d.fits", Cubeviz),
     ("https://stsci.box.com/shared/static/28a88k1qfipo4yxc4p4d40v4axtlal8y.fits", Cubeviz)
     # Check that MaNGA cubes go to cubeviz. This file is originally from:
     # https://data.sdss.org/sas/dr14/manga/spectro/redux/v2_1_2/7495/stack/manga-7495-12704-LOGCUBE.fits.gz)
@@ -27,17 +28,13 @@ AUTOCONFIG_EXAMPLES = (
 @pytest.mark.slow
 @pytest.mark.filterwarnings('ignore')
 @pytest.mark.parametrize('uris', AUTOCONFIG_EXAMPLES)
-def test_autoconfig(uris, tmp_path):
+def test_autoconfig(uris):
     uri = uris[0]
     helper_class = uris[1]
 
-    local_path = str(tmp_path / Path(uri).name)
-
     kwargs = dict(cache=True, show=False)
-    if uri.startswith('mast'):
-        kwargs['local_path'] = local_path
 
-    viz_helper = jdaviz_open(uri, **kwargs)
+    viz_helper = jdaviz_open(cached_uri(uri), **kwargs)
     assert isinstance(viz_helper, helper_class)
     assert len(viz_helper.app.data_collection) > 0
 
@@ -63,11 +60,15 @@ def test_launcher(tmp_path):
 
     # Test with real files
     for uri, config in AUTOCONFIG_EXAMPLES:
+        uri = cached_uri(uri)
         if uri.startswith("mast:"):
             download_path = str(tmp_path / Path(uri).name)
             Observations.download_file(uri, local_path=download_path)
         elif uri.startswith("http"):
             download_path = download_file(uri, cache=True, timeout=100)
+        else:
+            # cached local file
+            download_path = uri
         launcher.filepath = download_path
         # In testing, setting the filepath will stall until identifying is complete
         # No need to be concerned for race condition here

@@ -22,7 +22,7 @@ jobs:
   ci_tests:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ matrix.allow_failure }}
+    continue-on-error: ${{ matrix.allow_failure || contains(github.event.pull_request.labels.*.name, 'continue-on-error') }}
     strategy:
       matrix:
         include:
@@ -86,7 +86,7 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
       with:
         fetch-depth: 0
     - name: Set up python ${{ matrix.python }} on ${{ matrix.os }}
@@ -98,6 +98,44 @@ jobs:
     - name: Install extra dependencies for strauss
       if: "contains(matrix.toxenv, 'alldeps')"
       run: sudo apt-get install libportaudio2
+    - name: Get IP address for MAST debugging
+      if: "contains(matrix.toxposargs, '--remote-data')"
+      run: curl https://api.ipify.org
+    - name: Get components for cache key
+      id: date
+      if: "contains(matrix.toxposargs, '--remote-data')"
+      run: |
+        echo "year=$(date +'%Y')" >> $GITHUB_OUTPUT
+        echo "week=$(date +'%V')" >> $GITHUB_OUTPUT
+        echo "day=$(date +'%j')" >> $GITHUB_OUTPUT
+    - name: Restore MAST cache
+      if: "contains(matrix.toxposargs, '--remote-data')"
+      id: cache-restore
+      uses: actions/cache/restore@v4
+      with:
+        path: ./
+        key: use-restore-keys-below-to-match-in-priority-order
+        restore-keys: |
+          mast-cache-${{ steps.date.outputs.year }}-${{ steps.date.outputs.week }}-${{ steps.date.outputs.day }}-
+          mast-cache-${{ steps.date.outputs.year }}-${{ steps.date.outputs.week }}-
+          mast-cache-${{ steps.date.outputs.year }}-
+          mast-cache-
+    - name: Move cache to tox working directory
+      if: "contains(matrix.toxposargs, '--remote-data')"
+      run: |
+        # Create cache directories for all possible tox environments
+        # tox runs from .tmp/{envname}, so we need to place cache files there
+        mkdir -p ".tmp/${{ matrix.toxenv }}"
+
+        # Check if any fits files exist and move them to the tox working directory
+        if ls ./*.fits 1> /dev/null 2>&1; then
+          mv ./*.fits ".tmp/${{ matrix.toxenv }}/"
+          echo "Cache files moved to .tmp/${{ matrix.toxenv }}/"
+          echo "Files in tox working directory:"
+          ls -la ".tmp/${{ matrix.toxenv }}/"*.fits
+        else
+          echo "No .fits files found in cache - tests will download files as needed"
+        fi
     - name: Test/run with tox
       run: tox -e ${{ matrix.toxenv }} -- ${{ matrix.toxposargs }}
     - name: Upload coverage to artifacts
@@ -115,15 +153,18 @@ jobs:
     runs-on: ubuntu-latest
     name: Upload Coverage
     steps:
+    # work around CodeCov upload issue
+    # see: https://github.com/codecov/codecov-action/issues/1801
+    - uses: actions/checkout@v5
     - name: Download coverage artifacts
-      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+      uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0  # v5.0.0
       with:
         path: coverage
         pattern: coverage_*
         merge-multiple: true
     - name: Upload report to Codecov
       if: ${{ hashFiles('coverage/') != '' }}
-      uses: codecov/codecov-action@ad3126e916f78f00edff4ed0317cf185271ccc2d  # v5.4.2
+      uses: codecov/codecov-action@fdcc8476540edceab3de004e990f80d881c6cc00  # v5.5.0
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
         directory: coverage

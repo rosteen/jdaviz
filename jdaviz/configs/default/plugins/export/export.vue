@@ -40,6 +40,44 @@
             hint="Image format for exporting viewers."
             :disabled="viewer_selected.length == 0"
           />
+          <div v-if="viewer_selected.length > 0 && ['png', 'mp4'].includes(viewer_format_selected)">
+            <v-row>
+              <plugin-switch
+                :value.sync="image_custom_size"
+                label="Custom Resolution"
+                api_hint="plg.image_custom_size = "
+                :api_hints_enabled="api_hints_enabled"
+                hint="Set custom size/resolution for the exported image."
+              />
+            </v-row>
+            <v-row v-if="image_custom_size">
+              <v-text-field
+                ref="image_width"
+                type="number"
+                :label="api_hints_enabled ? 'plg.image_width =' : 'Width'"
+                :class="api_hints_enabled ? 'api-hint' : null"
+                v-model.number="image_width"
+                hint="Width in pixels"
+                persistent-hint
+                :rules="[() => image_width !== '' || 'This field is required',
+                        () => image_width >=0 || 'Width must be positive']"
+              ></v-text-field>
+            </v-row>
+            <v-row v-if="image_custom_size">
+              <v-text-field
+                ref="image_height"
+                type="number"
+                :label="api_hints_enabled ? 'plg.image_height =' : 'Height'"
+                :class="api_hints_enabled ? 'api-hint' : null"
+                v-model.number="image_height"
+                hint="Height in pixels"
+                persistent-hint
+                :rules="[() => image_height !== '' || 'This field is required',
+                        () => image_height >=0 || 'Height must be positive']"
+              ></v-text-field>
+            </v-row>
+          </div>
+
         </div>
       </v-row>
       <v-row v-if="viewer_invalid_msg.length > 0">
@@ -164,6 +202,13 @@
           />
         </div>
       </v-row>
+
+      <v-row v-if="subset_format_invalid_msg.length > 0">
+        <span class="category-content v-messages v-messages__message text--secondary" style="color: red !important">
+          {{subset_format_invalid_msg}}
+        </span>
+      </v-row>
+
     </div>
 
     <div v-if="plugin_table_items.length > 0 && serverside_enabled">
@@ -272,7 +317,9 @@
         :api_hints_enabled="api_hints_enabled"
         :disabled="filename_value.length === 0 ||
                    movie_recording ||
-                   subset_invalid_msg.length > 0 || data_invalid_msg.length > 0 ||
+                   subset_invalid_msg.length > 0 ||
+                   data_invalid_msg.length > 0 ||
+                   subset_format_invalid_msg.length > 0 ||
                    viewer_invalid_msg.length > 0 ||
                    (viewer_selected.length > 0 && viewer_format_selected == 'mp4' && !movie_enabled)"
       >

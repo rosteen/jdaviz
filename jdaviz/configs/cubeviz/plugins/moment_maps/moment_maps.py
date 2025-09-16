@@ -3,8 +3,9 @@ import specutils
 from astropy import units as u
 from astropy.nddata import CCDData
 from astropy.utils import minversion
+from astropy.wcs import WCS
 from traitlets import Bool, List, Unicode, observe
-from specutils import manipulation, analysis, Spectrum1D
+from specutils import manipulation, analysis, Spectrum
 
 from jdaviz.core.custom_traitlets import IntHandleEmpty, FloatHandleEmpty
 from jdaviz.core.events import SnackbarMessage, GlobalDisplayUnitChanged
@@ -158,6 +159,11 @@ class MomentMap(PluginTemplateMixin, DatasetSelectMixin, SpectralSubsetSelectMix
 
     @observe("dataset_selected", "dataset_items", "n_moment")
     def _set_default_results_label(self, event={}):
+        # Also handle disabling the plugin if there is no dataset available
+        if self.dataset_items == []:
+            self.disabled_msg = "Moment Maps are unavailable without data loaded"
+        else:
+            self.disabled_msg = ""
         label_comps = []
         if hasattr(self, 'dataset') and len(self.dataset.labels) > 1:
             label_comps += [self.dataset_selected]
@@ -292,9 +298,6 @@ class MomentMap(PluginTemplateMixin, DatasetSelectMixin, SpectralSubsetSelectMix
             w = data.meta['_orig_spec'].wcs
         else:
             w = data.coords
-        data_wcs = getattr(w, 'celestial', None)
-        if data_wcs:
-            data_wcs = data_wcs.swapaxes(0, 1)  # We also transpose WCS to match.
 
         # Convert spectral axis to velocity units if desired output is in velocity
         if n_moment > 0 and self.output_unit_selected.lower().startswith("velocity"):
@@ -305,15 +308,17 @@ class MomentMap(PluginTemplateMixin, DatasetSelectMixin, SpectralSubsetSelectMix
             ref_wavelength = self.reference_wavelength * u.Unit(self.dataset_spectral_unit)
             slab_sa = slab.spectral_axis.to("km/s", doppler_convention="relativistic",
                                             doppler_rest=ref_wavelength)
-            slab = Spectrum1D(slab.flux, slab_sa, uncertainty=slab.uncertainty)
+            slab = Spectrum(slab.flux, slab_sa, uncertainty=slab.uncertainty,
+                            spectral_axis_index=cube.spectral_axis_index)
         # Otherwise convert spectral axis to display units, have to do frequency <-> wavelength
         # before calculating
         else:
             slab_sa = slab.spectral_axis.to(self.app._get_display_unit('spectral'))
-            slab = Spectrum1D(slab.flux, slab_sa, uncertainty=slab.uncertainty)
+            slab = Spectrum(slab.flux, slab_sa, uncertainty=slab.uncertainty,
+                            spectral_axis_index=cube.spectral_axis_index)
 
         # Finally actually calculate the moment
-        self.moment = analysis.moment(slab, order=n_moment).T
+        self.moment = analysis.moment(slab, order=n_moment)
         # If n>1 and velocity is desired, need to take nth root of result
         if n_moment > 0 and self.output_unit_selected.lower() == "velocity":
             self.moment = np.power(self.moment, 1/self.n_moment)
@@ -357,13 +362,23 @@ class MomentMap(PluginTemplateMixin, DatasetSelectMixin, SpectralSubsetSelectMix
                 self.moment = moment
 
         # Reattach the WCS so we can load the result
+        if hasattr(w, 'celestial'):
+            # This is the FITS WCS case
+            data_wcs = getattr(w, 'celestial', None)
+        elif hasattr(w, 'to_fits_sip'):
+            # If it's a GWCS we pull out the celestial part
+            data_wcs = WCS(w.to_fits_sip())
+        else:
+            data_wcs = None
+
         self.moment = CCDData(self.moment, wcs=data_wcs)
 
         fname_label = self.dataset_selected.replace("[", "_").replace("]", "")
         self.filename = f"moment{n_moment}_{fname_label}.fits"
 
         if add_data:
-            self.add_results.add_results_from_plugin(self.moment)
+            self.add_results.add_results_from_plugin(self.moment,
+                                                     format='Image')
 
             msg = SnackbarMessage("{} added to data collection".format(self.results_label),
                                   sender=self, color="success")

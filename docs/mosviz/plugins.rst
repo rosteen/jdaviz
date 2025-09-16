@@ -3,11 +3,10 @@ Data Analysis Plugins
 *********************
 
 The Mosviz data analysis plugins include operations on both
-2D images and Spectrum1D one dimensional datasets.
+2D images and Spectrum one dimensional datasets.
 Plugins that are specific to 1D spectra are described in
-more detail under Specviz:Data Analysis Plugins.  All plugins
-are accessed via the plugin icon in the upper right corner
-of the Mosviz application.
+more detail under :ref:`Data Analysis Plugins <specviz-plugins>`. All plugins
+are accessed via the plugin icon in the upper right corner of the Mosviz application.
 
 .. _mosviz-metadata-viewer:
 
@@ -17,15 +16,15 @@ Metadata Viewer
 This plugin allows viewing of any metadata associated with the selected data.
 
 If the data is loaded from multi-extension FITS that contains a primary header,
-you will also see a :guilabel:`Show primary header` toggle, when enabled, would
-display just the primary header metadata.
+you will also see a :guilabel:`Show primary header` toggle. When enabled, the plugin will only
+display the primary header metadata.
 
 .. _mosviz-export-plot:
 
 Export
 ======
 
-This plugin allows exporting the plot in a given viewer to various image formats.
+This plugin allows exporting the plot and/or subsets in a given viewer to various formats.
 
 .. _mosviz-plot-options:
 
@@ -33,6 +32,16 @@ Plot Options
 ============
 
 This plugin gives access to per-viewer and per-layer plotting options.
+
+.. seealso::
+
+    :ref:`Image Plot Options <imviz-display-settings>`
+        Documentation on Imviz display settings in the Jdaviz viewers.
+
+.. seealso::
+
+    :ref:`Spectral Plot Options <specviz-plot-settings>`
+        Documentation on Specviz display settings in the Jdaviz viewers.
 
 .. _mosviz-subset-plugin:
 
@@ -44,7 +53,7 @@ Subset Tools
     :ref:`Subset Tools <imviz-subset-plugin>`
         Imviz documentation describing the concept of subsets in Jdaviz.
 
-.. _imviz_export_markers:
+.. _mosviz-markers:
 
 Markers
 =======
@@ -57,9 +66,6 @@ Markers
 Gaussian Smooth
 ===============
 
-Gaussian smoothing of a spectrum is
-described under Specviz:Data Analysis Plugins:Gaussian Smoothing.
-
 .. seealso::
 
     :ref:`Gaussian Smooth <gaussian-smooth>`
@@ -67,9 +73,6 @@ described under Specviz:Data Analysis Plugins:Gaussian Smoothing.
 
 Model Fitting
 =============
-
-The Model Fitting plugin is described in more detail by the
-Specviz:Data Analysis Plugins:Model Fitting documentation.
 
 .. seealso::
 
@@ -86,18 +89,17 @@ Line Lists
     :ref:`Line Lists <line-lists>`
         Specviz documentation on line lists.
 
-
 Redshift Slider
 ---------------
-
-.. warning::
-    Using the redshift slider with many active spectral lines causes performance issues.
-    If the shifting of spectral lines lag behind the slider, try plotting less lines.
-    You can deselect lines using, e.g., the "Erase All" button in the line lists UI.
 
 As in :ref:`Specviz <line-lists>`, the Line Lists Plugin includes a slider to adjust the redshift
 or radial velocity.  In Mosviz, this is applied to the current row in the table
 and is stored (and shown) in a column of the table.
+
+.. warning::
+    Using the redshift slider with many active spectral lines causes performance issues.
+    If the shifting of spectral lines lag behind the slider, try plotting fewer lines.
+    You can remove lines from the plot using, e.g., the "Erase All" button in the line lists UI.
 
 .. seealso::
 
@@ -120,5 +122,5 @@ The :guilabel:`Remove` button can be used to remove a slit once it has been appl
 
 In order to plot a slit onto the image viewer, we need WCS information from an image and slit position from a 2D spectrum.
 The slit position is calculated using the ``S_REGION`` header extension value, located in the
-`~specutils.Spectrum1D.meta` attribute of the :class:`~specutils.Spectrum1D` object
+`~specutils.Spectrum.meta` attribute of the :class:`~specutils.Spectrum` object
 that is active in the 2D spectrum viewer.

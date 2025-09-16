@@ -5,13 +5,13 @@ from astropy.table import QTable
 from astropy.tests.helper import assert_quantity_allclose
 from numpy.testing import assert_allclose
 from regions import RectanglePixelRegion, PixCoord
-from specutils import Spectrum1D, SpectralRegion
+from specutils import Spectrum, SpectralRegion
 from glue.core.roi import XRangeROI
 
-from jdaviz.configs.specviz.plugins.line_analysis.line_analysis import _coerce_unit
 from jdaviz.core.custom_units_and_equivs import PIX2
 from jdaviz.core.events import LineIdentifyMessage
 from jdaviz.core.marks import LineAnalysisContinuum
+from jdaviz.core.unit_conversion_utils import coerce_unit
 
 
 def test_plugin(specviz_helper, spectrum1d):
@@ -264,11 +264,11 @@ def test_coerce_unit():
     q_input = 1 * u.Unit('1E-20 erg m / (Angstrom cm**2 s)')
     q_input.uncertainty = 0.1 * u.Unit('1E-20 erg m / (Angstrom cm**2 s)')
     q_unit = u.Unit('erg / (cm**2 s)')
-    q_coerced = _coerce_unit(q_input)
+    q_coerced = coerce_unit(q_input)
     assert_quantity_allclose(q_coerced, 1e-10 * q_unit)
     assert_quantity_allclose(q_coerced.uncertainty, 1e-11 * q_unit)
     q_input.uncertainty = None
-    q_coerced = _coerce_unit(q_input)
+    q_coerced = coerce_unit(q_input)
     assert not hasattr(q_coerced, 'uncertainty')
 
 
@@ -521,8 +521,8 @@ def test_invalid_subset(specviz_helper, spectrum1d):
     specviz_helper.load_data(spectrum1d, data_label="right_spectrum")
 
     # 5000-7000
-    sp2 = Spectrum1D(spectral_axis=spectrum1d.spectral_axis - 1000*spectrum1d.spectral_axis.unit,
-                     flux=spectrum1d.flux * 1.25)
+    sp2 = Spectrum(spectral_axis=spectrum1d.spectral_axis - 1000*spectrum1d.spectral_axis.unit,
+                   flux=spectrum1d.flux * 1.25)
     specviz_helper.load_data(sp2, data_label="left_spectrum")
 
     # apply subset that overlaps on left_spectrum, but not right_spectrum

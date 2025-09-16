@@ -21,12 +21,12 @@ from jdaviz.core.marks import PluginMarkCollection, PluginLine
 
 from astropy.modeling import models
 from astropy.nddata import StdDevUncertainty, VarianceUncertainty, UnknownUncertainty
-from specutils import Spectrum1D
+from specutils import Spectrum
 from specreduce import tracing
 from specreduce import background
 from specreduce import extract
 
-__all__ = ['SpectralExtraction']
+__all__ = ['SpectralExtraction2D']
 
 _model_cls = {'Spline': models.Spline1D,
               'Polynomial': models.Polynomial1D,
@@ -34,13 +34,13 @@ _model_cls = {'Spline': models.Spline1D,
               'Chebyshev': models.Chebyshev1D}
 
 
-@tray_registry('spectral-extraction', label="Spectral Extraction",
+@tray_registry('spectral-extraction-2d', label="2D Spectral Extraction",
                category="data:reduction")
-class SpectralExtraction(PluginTemplateMixin):
+class SpectralExtraction2D(PluginTemplateMixin):
     """
-    The Spectral Extraction plugin exposes specreduce methods for tracing, background subtraction,
-    and spectral extraction from 2D spectra.
-    See the :ref:`Spectral Extraction Plugin Documentation <specviz2d-spectral-extraction>`
+    The Spectral Extraction 2D plugin exposes specreduce methods for tracing,
+    background subtraction, and spectral extraction from 2D spectra.
+    See the :ref:`2D Spectral Extraction Plugin Documentation <specviz2d-spectral-extraction>`
     for more details.
 
     Only the following attributes and methods are available through the
@@ -246,7 +246,7 @@ class SpectralExtraction(PluginTemplateMixin):
                                            'trace_dataset_items',
                                            'trace_dataset_selected',
                                            filters=['layer_in_spectrum_2d_viewer', 'not_trace'])
-        self.trace_dataset.get_data_cls = Spectrum1D
+        self.trace_dataset.get_data_cls = Spectrum
 
         self.trace_type = SelectPluginComponent(self,
                                                 items='trace_type_items',
@@ -360,7 +360,8 @@ class SpectralExtraction(PluginTemplateMixin):
         self.app.hub.subscribe(self, ViewerVisibleLayersChangedMessage,
                                lambda _: self._update_plugin_marks())
 
-        self._set_relevant()
+        if self.config == "deconfigged":
+            self.observe_traitlets_for_relevancy(traitlets_to_observe=['trace_dataset_items'])
 
     @property
     def user_api(self):
@@ -387,15 +388,6 @@ class SpectralExtraction(PluginTemplateMixin):
                                            'import_extract',
                                            'export_extract', 'export_extract_spectrum'))
 
-    @observe('trace_dataset_items')
-    def _set_relevant(self, *args):
-        if self.app.config != 'deconfigged':
-            return
-        if len(self.trace_dataset_items) < 1:
-            self.irrelevant_msg = 'Requires at least one 2D spectrum'
-        else:
-            self.irrelevant_msg = ''
-
     def _clear_default_inputs(self):
         self.trace_pixel = 0
         self.trace_window = 0
@@ -413,8 +405,8 @@ class SpectralExtraction(PluginTemplateMixin):
         self._clear_default_inputs()
 
     def _extract_in_new_instance(self, dataset=None, add_data=False):
-        # create a new instance of the Spectral Extraction plugin (to not affect the instance in
-        # the tray) and extract the entire cube with defaults.
+        # create a new instance of the 2D Spectral Extraction plugin (to not
+        # affect the instance in the tray) and extract the entire cube with defaults.
         plg = self.new()
         # all other settings remain at their plugin defaults
         plg._clear_default_inputs()
@@ -828,7 +820,9 @@ class SpectralExtraction(PluginTemplateMixin):
             raise NotImplementedError(f"trace_type={self.trace_type_selected} not implemented")
 
         if add_data:
-            self.trace_add_results.add_results_from_plugin(trace, replace=False)
+            self.trace_add_results.add_results_from_plugin(trace,
+                                                           format='Trace',
+                                                           replace=False)
 
         return trace
 
@@ -887,12 +881,6 @@ class SpectralExtraction(PluginTemplateMixin):
     def export_bg(self, **kwargs):
         """
         Create a specreduce Background object from the input parameters defined in the plugin.
-
-        Parameters
-        ----------
-        add_data : bool
-            Whether to add the resulting image to the application, according to the options
-            defined in the plugin.
         """
         self._set_create_kwargs(**kwargs)
         if len(kwargs) and self.active_step != 'bg':
@@ -938,7 +926,9 @@ class SpectralExtraction(PluginTemplateMixin):
         bg_spec = self.export_bg(**kwargs).bkg_image()
 
         if add_data:
-            self.bg_add_results.add_results_from_plugin(bg_spec, replace=True)
+            self.bg_add_results.add_results_from_plugin(bg_spec,
+                                                        format='2D Spectrum',
+                                                        replace=True)
 
         return bg_spec
 
@@ -948,7 +938,7 @@ class SpectralExtraction(PluginTemplateMixin):
         except Exception as e:
             self.app.hub.broadcast(
                 SnackbarMessage(f"Specreduce background failed with the following error: {repr(e)}",
-                                color='error', sender=self)
+                                color='error', sender=self, traceback=e)
             )
 
     @with_spinner('bg_spec_spinner')
@@ -965,7 +955,9 @@ class SpectralExtraction(PluginTemplateMixin):
         spec = self.export_bg(**kwargs).bkg_spectrum()
 
         if add_data:
-            self.bg_spec_add_results.add_results_from_plugin(spec, replace=False)
+            self.bg_spec_add_results.add_results_from_plugin(spec,
+                                                             format='1D Spectrum',
+                                                             replace=False)
 
         return spec
 
@@ -986,7 +978,9 @@ class SpectralExtraction(PluginTemplateMixin):
         bg_sub_spec = self.export_bg(**kwargs).sub_image()
 
         if add_data:
-            self.bg_sub_add_results.add_results_from_plugin(bg_sub_spec, replace=True)
+            self.bg_sub_add_results.add_results_from_plugin(bg_sub_spec,
+                                                            format='2D Spectrum',
+                                                            replace=True)
 
         return bg_sub_spec
 
@@ -1099,7 +1093,9 @@ class SpectralExtraction(PluginTemplateMixin):
                                         open_data_menu_if_empty=False)
                 self.ext_add_results.viewer = viewer_ref
 
-            self.ext_add_results.add_results_from_plugin(spectrum, replace=False)
+            self.ext_add_results.add_results_from_plugin(spectrum,
+                                                         format='1D Spectrum',
+                                                         replace=False)
 
         return spectrum
 

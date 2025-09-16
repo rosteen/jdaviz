@@ -62,7 +62,7 @@
             <v-list-item v-if="api_hints_enabled" style="min-height: 12px">
               <v-list-item-content>
                 <span class="api-hint">
-                  <b>dm = {{ api_hints_obj }}.viewers['{{viewer_id}}'].data_menu</b>
+                  <b>dm = {{ api_hints_obj }}.viewers['{{viewer_reference}}'].data_menu</b>
                 </span>
               </v-list-item-content>
             </v-list-item>
@@ -192,7 +192,7 @@
                     </v-list-item-content>
                     <v-list-item-action>
                       <j-tooltip
-                        :tooltipcontent="api_hints_enabled ? '' : 'Toggle visibility'"
+                        :tooltipcontent="api_hints_enabled ? '' : item.is_sonfied ? 'Toggle sonification' : 'Toggle visibility'"
                       >
                         <plugin-switch
                           :value="item.visible"
@@ -200,7 +200,7 @@
                           @mouseover = "() => {hover_api_hint = 'dm.set_layer_visibility(\'' + item.label + '\', '+boolToString(item.visible)+')'}"
                           @mouseleave = "() => {if (!lock_hover_api_hint) {hover_api_hint = ''}}"
                           :api_hints_enabled="false"
-                          :use_eye_icon="true"
+                          :use_icon="item.is_sonfiied ? 'speaker' : 'eye'"
                         />
                       </j-tooltip>
                     </v-list-item-action>
@@ -328,6 +328,9 @@
           const dataMenuHeight = document.getElementById(`layer-legend-${this.viewer_id}`).parentElement.getBoundingClientRect().height
           const top = document.getElementById(`dm-target-${this.viewer_id}`).getBoundingClientRect().y + document.body.parentElement.scrollTop + dataMenuHeight;
           const menuContent = document.getElementById(`dm-content-${this.viewer_id}`);
+          if (menuContent === null || menuContent.parentElement === null) {
+            return;
+          }
           menuContent.parentElement.style.top = top + "px";
 
           /* since Jupyter Lab 4.2 cells outside the view port get a height of 0, causing the menu to be visible when

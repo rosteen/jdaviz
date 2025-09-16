@@ -1,6 +1,9 @@
 <template>
   <v-app id="web-app" :style="checkNotebookContext() ? 'display: inline' : 'display: flex'" :class="'jdaviz ' + config" ref="mainapp">
     <jupyter-widget :widget="style_registry_instance"></jupyter-widget>
+    <div style="overflow: hidden; width: 0px; height: 0px">
+      <jupyter-widget :widget="widget" v-for="widget in invisible_children" :key="widget"></jupyter-widget>
+    </div>
     <v-app-bar color="toolbar" dark :dense="state.settings.dense_toolbar" flat app absolute clipped-right :style="checkNotebookContext() ? 'margin-left: 1px; margin-right: 1px' : ''">
 
       <v-toolbar-items v-if="config === 'deconfigged'">
@@ -17,15 +20,19 @@
 
         <v-divider vertical style="margin: 0px 10px"></v-divider>
 
-
-        <j-tooltip tipid="app-toolbar-plugins">
-          <v-btn icon @click="() => {if (state.drawer_content === 'plugins') {state.drawer_content = ''} else {state.drawer_content = 'plugins'}}" :class="{active : state.drawer_content === 'plugins'}" :disabled="state.tray_items.filter(ti => {return (ti.is_relevant && ti.sidebar === 'plugins')}).length === 0">
-            <v-icon>mdi-view-grid-outline</v-icon>
+        <j-tooltip tipid="app-toolbar-settings">
+          <v-btn icon @click="() => {if (state.drawer_content === 'settings') {state.drawer_content = ''} else {state.drawer_content = 'settings'}}" :class="{active : state.drawer_content === 'settings'}" :disabled="!state.tray_items[state.tray_items.map(ti => ti.label).indexOf('Plot Options')].is_relevant">
+            <v-icon medium style="padding-top: 2px">mdi-cog</v-icon>
           </v-btn>
         </j-tooltip>
         <j-tooltip tipid="app-toolbar-info">
           <v-btn icon @click="() => {if (state.drawer_content === 'info') {state.drawer_content = ''} else {state.drawer_content = 'info'}}" :class="{active : state.drawer_content === 'info'}" :disabled="!state.tray_items[state.tray_items.map(ti => ti.label).indexOf('Metadata')].is_relevant">
-            <v-icon medium style="padding-top: 2px">mdi-format-list-bulleted</v-icon>
+            <v-icon medium style="padding-top: 2px">mdi-information-outline</v-icon>
+          </v-btn>
+        </j-tooltip>
+        <j-tooltip tipid="app-toolbar-plugins">
+          <v-btn icon @click="() => {if (state.drawer_content === 'plugins') {state.drawer_content = ''} else {state.drawer_content = 'plugins'}}" :class="{active : state.drawer_content === 'plugins'}" :disabled="state.tray_items.filter(ti => {return (ti.is_relevant && ti.sidebar === 'plugins')}).length === 0">
+            <v-icon>mdi-tune-variant</v-icon>
           </v-btn>
         </j-tooltip>
         <j-tooltip tipid="app-toolbar-subsets">
@@ -35,13 +42,6 @@
             </v-icon>
           </v-btn>
         </j-tooltip>
-        <j-tooltip tipid="app-toolbar-viewers">
-          <v-btn icon @click="() => {if (state.drawer_content === 'viewers') {state.drawer_content = ''} else {state.drawer_content = 'viewers'}}" :class="{active : state.drawer_content === 'viewers'}" :disabled="!state.tray_items[state.tray_items.map(ti => ti.label).indexOf('Plot Options')].is_relevant">
-            <v-icon medium style="padding-top: 2px">mdi-chart-histogram</v-icon>
-          </v-btn>
-        </j-tooltip>
-
-
 
         <v-divider vertical style="margin: 0px 10px"></v-divider>
       </v-toolbar-items>
@@ -49,7 +49,7 @@
       <v-toolbar-items v-for="(item, index) in state.tool_items">
         <!-- this logic assumes the first entry is g-data-tools, if that changes, this may need to be modified -->
         <v-divider v-if="config !== 'deconfigged' && index > 1" vertical style="margin: 0px 10px"></v-divider>
-        <j-tooltip v-if="item.name === 'g-data-tools' && ['specviz', 'specviz2d'].indexOf(config) !== -1" tooltipcontent="Open data menu in sidebar (this button will be removed in a future release)">
+        <j-tooltip v-if="item.name === 'g-data-tools' && ['cubeviz', 'mosviz', 'rampviz'].indexOf(config) === -1" tooltipcontent="Open data menu in sidebar (this button will be removed in a future release)">
           <v-btn tile depressed color="turquoise" @click="state.drawer_content = 'loaders'">
             Import Data
           </v-btn>
@@ -63,6 +63,9 @@
 
       <v-spacer></v-spacer>
       <v-toolbar-items v-if="config !== 'deconfigged'">
+        <j-tooltip tipid="app-toolbar-popout" span_style="scale: 0.8; margin-left: -4px; margin-right: -4px">
+          <jupyter-widget :widget="popout_button" ></jupyter-widget>
+        </j-tooltip>
         <j-tooltip v-if="state.show_toolbar_buttons" tipid="app-help">
           <v-btn icon :href="docs_link" target="_blank">
             <v-icon medium>mdi-help-box</v-icon>
@@ -74,7 +77,7 @@
           </v-btn>
         </j-tooltip>
         <v-divider v-if="state.show_toolbar_buttons" vertical style="margin: 0px 10px"></v-divider>
-        <j-tooltip v-if="(state.dev_loaders || ['specviz', 'specviz2d'].indexOf(config) !== -1) && (state.show_toolbar_buttons || state.drawer_content === 'loaders') && state.loader_items.length > 0" tipid="app-toolbar-loaders">
+        <j-tooltip v-if="(state.dev_loaders || ['cubeviz', 'mosviz', 'rampviz'].indexOf(config) === -1) && (state.show_toolbar_buttons || state.drawer_content === 'loaders') && state.loader_items.length > 0" tipid="app-toolbar-loaders">
           <v-btn icon @click="() => {if (state.drawer_content === 'loaders') {state.drawer_content = ''} else {state.drawer_content = 'loaders'}}" :class="{active : state.drawer_content === 'loaders'}">
             <v-icon medium style="padding-top: 2px">mdi-plus-box</v-icon>
           </v-btn>
@@ -92,28 +95,8 @@
       </v-toolbar-items>
 
       <v-toolbar-items v-if="config === 'deconfigged'">
-        <v-layout column style="height: 28px; padding-bottom: 12px" v-if="state.show_toolbar_buttons || state.global_search_menu || state.about_popup">
-          <span style="display: inline-flex; align-items: right">
-            <v-spacer></v-spacer>
-
-            <j-about-menu
-              :jdaviz_version="state.jdaviz_version"
-              :api_hints_obj="api_hints_obj"
-              :api_hints_enabled="state.show_api_hints"
-              :about_widget="state.tray_items[state.tray_items.map(ti => ti.label).indexOf('About')].widget"
-              :force_open_about.sync="force_open_about"
-            ></j-about-menu>
-
-            <j-tooltip v-if="state.show_toolbar_buttons && checkNotebookContext()" tipid="app-api-hints">
-              <v-btn icon @click="state.show_api_hints = !state.show_api_hints" :class="{active : state.show_api_hints}">
-                <img :src="state.icons['api']" width="24" class="color-to-white" style="opacity: 1.0"/>
-              </v-btn>
-            </j-tooltip>
-            <j-tooltip tipid="app-toolbar-popout">
-              <jupyter-widget :widget="popout_button" ></jupyter-widget>
-            </j-tooltip>
-          </span>
-          <span>
+        <v-layout column  class="app-bar-right" style="height: 28px; padding-bottom: 12px; margin-top: 2px" v-if="state.show_toolbar_buttons || state.global_search_menu || state.about_popup">
+          <span style="align-items: right; display: inline-flex; margin-right: 2px">
             <v-menu
               offset-y
               style="max-width: 600px"
@@ -122,11 +105,11 @@
                 <v-text-field
                     v-model='state.global_search'
                     append-icon='mdi-magnify'
-                    filled
+                    style="width: 200px; margin-right: 8px; margin-top: 2px"
                     dense
-                    style="width: 350px"
                     clearable
                     hide-details
+                    single-line
                     v-bind="attrs"
                     v-on="on"
                 ></v-text-field>
@@ -144,6 +127,21 @@
                         </v-list-item-subtitle>
                         <v-list-item-subtitle v-if="state.show_api_hints && state.global_search.length" v-for="api_method in trayItemMethodMatch(ldrItem, state.global_search)" style="white-space: normal; font-size: 8pt; padding-top: 4px; padding-bottom: 4px" class="api-hint">
                           <span class="api-hint">ldr.{{ api_method }}</span>
+                        </v-list-item-subtitle>
+                      </v-list-item>
+                    </v-row>
+                  </div>
+                  <div v-for="vcItem in state.new_viewer_items" :key="vcItem.label">
+                    <v-row v-if="vcItem.is_relevant && trayItemVisible(vcItem, state.global_search)">
+                      <v-list-item style="display: grid; min-height: 6px; cursor: pointer" @click="(e) => {search_item_clicked({attr: 'new_viewers', label: vcItem.label})}">
+                        <v-list-item-title>
+                          New Viewer: {{ vcItem.label }}
+                        </v-list-item-title>
+                        <v-list-item-subtitle v-if="state.show_api_hints" style="white-space: normal; font-size: 8pt; padding-top: 4px; padding-bottom: 4px" class="api-hint">
+                          <span class="api-hint">vc = {{  api_hints_obj || config }}.new_viewers['{{ vcItem.label }}']</span>
+                        </v-list-item-subtitle>
+                        <v-list-item-subtitle v-if="state.show_api_hints && state.global_search.length" v-for="api_method in trayItemMethodMatch(vcItem, state.global_search)" style="white-space: normal; font-size: 8pt; padding-top: 4px; padding-bottom: 4px" class="api-hint">
+                          <span class="api-hint">vc.{{ api_method }}</span>
                         </v-list-item-subtitle>
                       </v-list-item>
                     </v-row>
@@ -185,8 +183,28 @@
               </v-card>
             </v-menu>
           </span>
-        </v-layout>
 
+          <span style="display: inline-flex; align-items: center; margin-top: 4px;">
+            <v-spacer></v-spacer>
+
+            <j-about-menu
+              :jdaviz_version="state.jdaviz_version"
+              :api_hints_obj="api_hints_obj"
+              :api_hints_enabled="state.show_api_hints"
+              :about_widget="state.tray_items[state.tray_items.map(ti => ti.label).indexOf('About')].widget"
+              :force_open_about.sync="force_open_about"
+            ></j-about-menu>
+
+            <j-tooltip v-if="state.show_toolbar_buttons && checkNotebookContext()" tipid="app-api-hints">
+              <v-btn small icon @click="state.show_api_hints = !state.show_api_hints" :class="{active : state.show_api_hints}">
+                <img :src="state.icons['api']" width="24" class="color-to-white" style="opacity: 1.0; padding-top: 2px; padding-bottom: 2px"/>
+              </v-btn>
+            </j-tooltip>
+            <j-tooltip tipid="app-toolbar-popout" span_style="scale: 0.8; margin-left: -4px; margin-right: -4px">
+              <jupyter-widget :widget="popout_button" ></jupyter-widget>
+            </j-tooltip>
+          </span>
+        </v-layout>
       </v-toolbar-items>
     </v-app-bar>
 
@@ -204,7 +222,7 @@
               </v-tabs>
               <v-tabs-items v-model="state.add_subtab" style="overflow-y: auto">
                 <v-tab-item style="padding-bottom: 40px">
-                    <j-loader-panel
+                  <j-loader-panel
                     :loader_items="state.loader_items"
                     :loader_selected.sync="state.loader_selected"
                     :api_hints_enabled="state.show_api_hints"
@@ -212,7 +230,12 @@
                   ></j-loader-panel>
                 </v-tab-item>
                 <v-tab-item style="padding-bottom: 40px">
-                  <p>Add Viewer Panel</p>
+                  <j-new-viewer-panel
+                    :new_viewer_items="state.new_viewer_items"
+                    :new_viewer_selected.sync="state.new_viewer_selected"
+                    :api_hints_enabled="state.show_api_hints"
+                    :api_hints_obj="api_hints_obj || config"
+                  ></j-new-viewer-panel>
                 </v-tab-item>
               </v-tabs-items>
             </v-card>
@@ -260,12 +283,17 @@
             <v-card v-if="state.drawer_content === 'info'" flat tile class="fill-height" style="overflow-x: hidden; overflow-y: hidden" color="gray">
               <v-tabs fixed-tabs dark background-color="viewer_toolbar" v-model="state.info_subtab">
                 <v-tab>Metadata</v-tab>
+                <v-tab>Markers</v-tab>
                 <v-tab>Logger</v-tab>
               </v-tabs>
               <v-tabs-items v-model="state.info_subtab" style="overflow-y: auto">
                 <v-tab-item style="padding-bottom: 40px">
                   <span v-if="state.show_api_hints" class="api-hint" style="font-weight: bold">plg = {{  api_hints_obj || config }}.plugins['Metadata']</span>
                   <jupyter-widget :widget="state.tray_items[state.tray_items.map(ti => ti.label).indexOf('Metadata')].widget"></jupyter-widget>
+                </v-tab-item>
+                <v-tab-item style="padding-bottom: 40px">
+                  <span v-if="state.show_api_hints" class="api-hint" style="font-weight: bold">plg = {{  api_hints_obj || config }}.plugins['Markers']</span>
+                  <jupyter-widget :widget="state.tray_items[state.tray_items.map(ti => ti.label).indexOf('Markers')].widget"></jupyter-widget>
                 </v-tab-item>
                 <v-tab-item style="padding-bottom: 40px">
                   <span v-if="state.show_api_hints" class="api-hint" style="font-weight: bold">plg = {{  api_hints_obj || config }}.plugins['Logger']</span>
@@ -277,19 +305,19 @@
               <span v-if="state.show_api_hints" class="api-hint" style="font-weight: bold">plg = {{  api_hints_obj || config }}.plugins['Subset Tools']</span>
               <jupyter-widget :widget="state.tray_items[state.tray_items.map(ti => ti.label).indexOf('Subset Tools')].widget"></jupyter-widget>
             </v-card>
-            <v-card v-if="state.drawer_content === 'viewers'" flat tile class="fill-height" style="overflow-x: hidden; overflow-y: hidden" color="gray">
-              <v-tabs fixed-tabs dark background-color="viewer_toolbar" v-model="state.viewers_subtab">
+            <v-card v-if="state.drawer_content === 'settings'" flat tile class="fill-height" style="overflow-x: hidden; overflow-y: hidden" color="gray">
+              <v-tabs fixed-tabs dark background-color="viewer_toolbar" v-model="state.settings_subtab">
                 <v-tab :disabled="!state.tray_items[state.tray_items.map(ti => ti.label).indexOf('Plot Options')].is_relevant">Plot Options</v-tab>
-                <v-tab>Markers</v-tab>
+                <v-tab>Units</v-tab>
               </v-tabs>
-              <v-tabs-items v-model="state.viewers_subtab" style="overflow-y: auto">
+              <v-tabs-items v-model="state.settings_subtab" style="overflow-y: auto">
                 <v-tab-item style="padding-bottom: 40px">
                   <span v-if="state.show_api_hints" class="api-hint" style="font-weight: bold">plg = {{  api_hints_obj || config }}.plugins['Plot Options']</span>
                   <jupyter-widget :widget="state.tray_items[state.tray_items.map(ti => ti.label).indexOf('Plot Options')].widget"></jupyter-widget>
                 </v-tab-item>
                 <v-tab-item style="padding-bottom: 40px">
-                  <span v-if="state.show_api_hints" class="api-hint" style="font-weight: bold">plg = {{  api_hints_obj || config }}.plugins['Markers']</span>
-                  <jupyter-widget :widget="state.tray_items[state.tray_items.map(ti => ti.label).indexOf('Markers')].widget"></jupyter-widget>
+                  <span v-if="state.show_api_hints" class="api-hint" style="font-weight: bold">plg = {{  api_hints_obj || config }}.plugins['Unit Conversion']</span>
+                  <jupyter-widget :widget="state.tray_items[state.tray_items.map(ti => ti.label).indexOf('Unit Conversion')].widget"></jupyter-widget>
                 </v-tab-item>
               </v-tabs-items>
             </v-card>
@@ -298,16 +326,17 @@
 
           <pane size="75" min-size='25'>
             <golden-layout
-              v-if="outputCellHasHeight"
+              v-if="outputCellHasHeight && showGoldenLayout"
               style="height: 100%;"
               :has-headers="state.settings.visible.tab_headers"
               @state="onLayoutChange"
+              :state="golden_layout_state"
             >
               <gl-row :closable="false">
                 <g-viewer-tab
                   v-for="(stack, index) in state.stack_items"
                   :stack="stack"
-                  :key="stack.viewers.map(v => v.id).join('-')"
+                  :key="stack.viewers.map(v => v.id).join('-') + stack.children.map(v => v.id).join('-')"
                   :data_items="state.data_items"
                   :app_settings="state.settings"
                   :config="config"
@@ -418,6 +447,7 @@ export default {
   data() {
     return {
       outputCellHasHeight: false,
+      showGoldenLayout: true,
     };
   },
   methods: {
@@ -445,7 +475,8 @@ export default {
       }
       return trayItem.api_methods.filter((item) => ("."+item.toLowerCase()).includes(tray_items_filter.toLowerCase()))
     },
-    onLayoutChange() {
+    onLayoutChange(v) {
+      this.golden_layout_state = v;
       /* Workaround for #1677, can be removed when bqplot/bqplot#1531 is released */
       window.dispatchEvent(new Event('resize'));
     }
@@ -464,6 +495,18 @@ export default {
       this.outputCellHasHeight = entries[0].contentRect.height > 0;
     }).observe(this.$refs.mainapp.$el);
     this.outputCellHasHeight = this.$refs.mainapp.$el.offsetHeight > 0
+
+    /* workaround: when initializing with an existing golden_layout state, the layout doesn't show. rendering it a
+     * second time the layout does show.
+     */
+    if (this.golden_layout_state) {
+      setTimeout(() => {
+        this.showGoldenLayout = false;
+        setTimeout(() => {
+          this.showGoldenLayout = true;
+        }, 100);
+      }, 500);
+    }
   }
 };
 </script>
@@ -477,5 +520,8 @@ export default {
 }
 .plugin-title.v-list-item:after {
   display: none !important;
+}
+.app-bar-right .v-input__append-inner {
+  padding-bottom: 6px !important;
 }
 </style>

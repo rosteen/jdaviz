@@ -12,7 +12,8 @@ from jdaviz.utils import get_top_layer_index
 __all__ = ['LineProfileXY']
 
 
-@tray_registry('imviz-line-profile-xy', label="Image Profiles (XY)")
+@tray_registry('imviz-line-profile-xy', label="Image Profiles (XY)",
+               category="data:analysis")
 class LineProfileXY(PluginTemplateMixin, ViewerSelectMixin):
     template_file = __file__, "line_profile_xy.vue"
     uses_active_status = Bool(True).tag(sync=True)
@@ -26,6 +27,8 @@ class LineProfileXY(PluginTemplateMixin, ViewerSelectMixin):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+
+        self.viewer.add_filter('is_image_viewer')
 
         # description displayed under plugin title in tray
         self._plugin_description = 'Plot line profiles across X and Y.'
@@ -47,6 +50,8 @@ class LineProfileXY(PluginTemplateMixin, ViewerSelectMixin):
                                  and then click PLOT."
 
         self.hub.subscribe(self, ViewerAddedMessage, handler=self._on_viewer_added)
+
+        self.observe_traitlets_for_relevancy(traitlets_to_observe=['viewer_items'])
 
     def reset_results(self):
         self.plot_available = False
@@ -124,12 +129,16 @@ class LineProfileXY(PluginTemplateMixin, ViewerSelectMixin):
             y_label = 'Value'
 
         xy_limits = viewer._get_zoom_limits(data)
+
+        # if any zoom limits are nan, that means that they fall outside the GWCS
+        # bounding box, so use image size for limits in that case
         x_limits = xy_limits[:, 0]
         y_limits = xy_limits[:, 1]
-        x_min = max(int(x_limits.min()), 0)
-        x_max = min(int(x_limits.max()), nx)
-        y_min = max(int(y_limits.min()), 0)
-        y_max = min(int(y_limits.max()), ny)
+
+        x_min = max(int(np.nan_to_num(x_limits.min(), nan=0)), 0)
+        x_max = min(int(np.nan_to_num(x_limits.max(), nan=nx)), nx)
+        y_min = max(int(np.nan_to_num(y_limits.min(), nan=0)), 0)
+        y_max = min(int(np.nan_to_num(y_limits.max(), nan=ny)), ny)
 
         self.plot_across_x.figure.title = f'X={x}'
         self.plot_across_x._update_data('line', x=range(comp.data.shape[0]), y=comp.data[:, x],

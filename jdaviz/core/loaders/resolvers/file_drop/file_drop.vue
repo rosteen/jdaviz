@@ -1,6 +1,7 @@
 <template>
     <j-loader
         title="File Drop"
+        :popout_button="popout_button"
         :target_items="target_items"
         :target_selected.sync="target_selected"
         :format_items_spinner="format_items_spinner"
@@ -8,8 +9,6 @@
         :format_selected.sync="format_selected"
         :importer_widget="importer_widget"
         :api_hints_enabled="api_hints_enabled"
-        :import_spinner="import_spinner"
-        @import-clicked="import_clicked"
     >
         <v-row>
             Select a file from your local file system and send to jdaviz through the browser.

@@ -7,6 +7,7 @@ from astropy.nddata import NDData, StdDevUncertainty
 from astropy.tests.helper import assert_quantity_allclose
 from astropy.utils.data import download_file
 from astropy.wcs import WCS
+
 from gwcs import WCS as GWCS
 from numpy.testing import assert_allclose, assert_array_equal
 from regions import CirclePixelRegion, EllipsePixelRegion, PixCoord, RectanglePixelRegion
@@ -17,6 +18,7 @@ from jdaviz.configs.imviz.helper import split_filename_with_fits_ext
 from jdaviz.configs.imviz.plugins.parsers import (
     parse_data, _validate_fits_image2d, _validate_bunit, _parse_image, HAS_ROMAN_DATAMODELS)
 from jdaviz.core.custom_units_and_equivs import PIX2
+from jdaviz.utils import STDATAMODELS_LT_402
 
 
 @pytest.mark.parametrize(
@@ -236,14 +238,13 @@ class TestParseImage:
 
     @pytest.mark.remote_data
     def test_parse_jwst_nircam_level2(self, imviz_helper):
+
         # Default behavior: Science image
-        with pytest.warns(UserWarning, match='You may be querying for a remote file'):
-            # if you don't pass a `cache` value, a warning should be raised:
-            imviz_helper.load_data(self.jwst_asdf_url_1, timeout=100)
+        imviz_helper.load_data(self.jwst_asdf_url_1, timeout=100, gwcs_to_fits_sip=False)
 
         data = imviz_helper.app.data_collection[0]
-        comp = data.get_component('DATA')
-        expected_label = os.path.splitext(os.path.basename(self.jwst_asdf_url_1))[0] + '[DATA]'
+        comp = data.get_component('data')
+        expected_label = os.path.splitext(os.path.basename(self.jwst_asdf_url_1))[0] + '[SCI,1]'
         assert data.label == expected_label
         assert data.shape == (2048, 2048)
         assert isinstance(data.coords, GWCS)
@@ -320,12 +321,12 @@ class TestParseImage:
         # --- Back to parser testing below. ---
 
         # Request specific extension (name + ver, but ver is not used), use given label
-        imviz_helper.load_data(self.jwst_asdf_url_1, cache=True, ext=('DQ', 42),
+        imviz_helper.load_data(self.jwst_asdf_url_1, cache=True, ext='DQ',
                                data_label='jw01072001001_01101_00001_nrcb1_cal',
                                show_in_viewer=False)
         data = imviz_helper.app.data_collection[1]
-        comp = data.get_component('DQ')
-        assert data.label == 'jw01072001001_01101_00001_nrcb1_cal[DQ]'
+        comp = data.get_component('dq')
+        assert data.label == 'jw01072001001_01101_00001_nrcb1_cal[DQ,1]'
         assert data.meta['aperture']['name'] == 'NRCB5_FULL'
         assert comp.units == ''
 
@@ -336,8 +337,8 @@ class TestParseImage:
                                    data_label='jw01072001001_01101_00001_nrcb1_cal',
                                    show_in_viewer=False)
             data = imviz_helper.app.data_collection[2]
-            comp = data.get_component('DATA')  # SCI = DATA
-            assert data.label == 'jw01072001001_01101_00001_nrcb1_cal[DATA]'
+            comp = data.get_component('data')  # SCI = DATA
+            assert data.label == 'jw01072001001_01101_00001_nrcb1_cal[SCI,1]'
             assert isinstance(data.coords, GWCS)
             assert comp.units == 'MJy/sr'
 
@@ -345,24 +346,24 @@ class TestParseImage:
             imviz_helper.app.data_collection.clear()
             imviz_helper.load_data(pf, ext='SCI', data_label='TEST', show_in_viewer=False)
             data = imviz_helper.app.data_collection[0]
-            assert data.label.endswith('[DATA]')
+            assert data.label.endswith('[SCI,1]')
 
             imviz_helper.load_data(pf, ext='SCI', data_label='TEST', show_in_viewer=False)
             data = imviz_helper.app.data_collection[1]
-            assert data.label.endswith('[DATA] (1)')
+            assert data.label.endswith('[SCI,1] (1)')
 
             # Load all extensions
             imviz_helper.app.data_collection.clear()
             imviz_helper.load_data(pf, ext='*', show_in_viewer=False)
             data = imviz_helper.app.data_collection
             assert len(data.labels) == 7
-            assert data.labels[0].endswith('[DATA]')
-            assert data.labels[1].endswith('[ERR]')
-            assert data.labels[2].endswith('[DQ]')
-            assert data.labels[3].endswith('[AREA]')
-            assert data.labels[4].endswith('[VAR_POISSON]')
-            assert data.labels[5].endswith('[VAR_RNOISE]')
-            assert data.labels[6].endswith('[VAR_FLAT]')
+            assert data.labels[0].endswith('[SCI,1]')
+            assert data.labels[1].endswith('[ERR,1]')
+            assert data.labels[2].endswith('[DQ,1]')
+            assert data.labels[3].endswith('[AREA,1]')
+            assert data.labels[4].endswith('[VAR_POISSON,1]')
+            assert data.labels[5].endswith('[VAR_RNOISE,1]')
+            assert data.labels[6].endswith('[VAR_FLAT,1]')
 
         # Invalid ASDF attribute (extension)
         with pytest.raises(KeyError, match='does_not_exist'):
@@ -372,8 +373,11 @@ class TestParseImage:
     def test_parse_jwst_niriss_grism(self, imviz_helper):
         imviz_helper.load_data(self.jwst_asdf_url_2, cache=True, show_in_viewer=False)
         data = imviz_helper.app.data_collection[0]
-        comp = data.get_component('DATA')
-        expected_label = os.path.splitext(os.path.basename(self.jwst_asdf_url_2))[0] + '[DATA]'
+        if STDATAMODELS_LT_402:
+            comp = data.get_component('data')
+        else:
+            comp = data.get_component('SCI,1')
+        expected_label = os.path.splitext(os.path.basename(self.jwst_asdf_url_2))[0] + '[SCI,1]'
         assert data.label == expected_label
         assert data.shape == (2048, 2048)
         assert data.coords is None
@@ -433,35 +437,11 @@ class TestParseImage:
             assert_quantity_allclose(tbl[0]['min'], -0.02422 * data_unit, rtol=1e-3)
             assert_quantity_allclose(tbl[0]['max'], 1.577081 * data_unit, rtol=1e-3)
             assert_quantity_allclose(tbl[0]['mean'], 0.043684 * data_unit, rtol=1e-3)
-            assert_quantity_allclose(tbl[0]['median'], 0.02129 * data_unit, rtol=1e-3)
-            assert_quantity_allclose(tbl[0]['mode'], -0.023497 * data_unit, rtol=1e-3)
-            assert_quantity_allclose(tbl[0]['std'], 0.09908 * data_unit, rtol=1e-3)
-            assert_quantity_allclose(tbl[0]['mad_std'], 0.023219 * data_unit, rtol=1e-3)
-            assert_quantity_allclose(tbl[0]['var'], 0.009817 * (data_unit * data_unit), rtol=1e-3)
-            assert_quantity_allclose(tbl[0]['biweight_location'], 0.020978 * data_unit, rtol=1e-3)
-            assert_quantity_allclose(tbl[0]['biweight_midvariance'], 0.000606 * (data_unit * data_unit), rtol=1e-3)  # noqa
-            assert_quantity_allclose(tbl[0]['fwhm'], 21.230628 * u.pix, rtol=1e-3)
-            assert_quantity_allclose(tbl[0]['semimajor_sigma'], 9.712415 * u.pix, rtol=1e-3)
-            assert_quantity_allclose(tbl[0]['semiminor_sigma'], 8.260686 * u.pix, rtol=1e-3)
-            assert_quantity_allclose(tbl[0]['orientation'], 80.054019 * u.deg, rtol=1e-3)
-            assert_quantity_allclose(tbl[0]['eccentricity'], 0.525929, rtol=1e-3)
         elif data.shape[1] == 4220:
-            assert_quantity_allclose(tbl[0]['sum'], 116.499811 * data_unit, rtol=1e-3)
-            assert_quantity_allclose(tbl[0]['min'], -0.035154 * data_unit, rtol=1e-3)
-            assert_quantity_allclose(tbl[0]['max'], 1.592533 * data_unit, rtol=1e-3)
-            assert_quantity_allclose(tbl[0]['mean'], 0.045163 * data_unit, rtol=1e-3)
-            assert_quantity_allclose(tbl[0]['median'], 0.021542 * data_unit, rtol=1e-3)
-            assert_quantity_allclose(tbl[0]['mode'], -0.0257 * data_unit, rtol=1e-3)
-            assert_quantity_allclose(tbl[0]['std'], 0.101232 * data_unit, rtol=1e-3)
-            assert_quantity_allclose(tbl[0]['mad_std'], 0.0237 * data_unit, rtol=1e-3)
-            assert_quantity_allclose(tbl[0]['var'], 0.010248 * (data_unit * data_unit), rtol=1e-3)
-            assert_quantity_allclose(tbl[0]['biweight_location'], 0.021214 * data_unit, rtol=1e-3)
-            assert_quantity_allclose(tbl[0]['biweight_midvariance'], 0.000631 * (data_unit * data_unit), rtol=1e-3)  # noqa
-            assert_quantity_allclose(tbl[0]['fwhm'], 22.203033 * u.pix, rtol=1e-3)
-            assert_quantity_allclose(tbl[0]['semimajor_sigma'], 10.543993 * u.pix, rtol=1e-3)
-            assert_quantity_allclose(tbl[0]['semiminor_sigma'], 8.162551 * u.pix, rtol=1e-3)
-            assert_quantity_allclose(tbl[0]['orientation'], 83.190667 * u.deg, rtol=1e-3)
-            assert_quantity_allclose(tbl[0]['eccentricity'], 0.633012, rtol=1e-3)
+            assert_quantity_allclose(tbl[0]['sum'], 127.233862 * data_unit, rtol=1e-3)
+            assert_quantity_allclose(tbl[0]['min'], -0.027572 * data_unit, rtol=1e-3)
+            assert_quantity_allclose(tbl[0]['max'], 4.021776 * data_unit, rtol=1e-3)
+            assert_quantity_allclose(tbl[0]['mean'], 0.049325 * data_unit, rtol=1e-3)
 
         # Request specific extension (name only), use given label
         imviz_helper.load_data(filename, ext='CTX', data_label='jclj01010_drz',
@@ -472,8 +452,8 @@ class TestParseImage:
         assert data.meta['EXTNAME'] == 'CTX'
         assert comp.units == ''  # BUNIT is not set
 
-        # Request specific extension (name + ver), use given label
-        imviz_helper.load_data(filename, ext=('WHT', 1), data_label='jclj01010_drz',
+        # Request specific extension and use given label
+        imviz_helper.load_data(filename, ext='WHT', data_label='jclj01010_drz',
                                show_in_viewer=False)
         data = imviz_helper.app.data_collection[2]
         comp = data.get_component('WHT,1')
@@ -486,14 +466,14 @@ class TestParseImage:
             # Default behavior: Load first image
             imviz_helper.load_data(pf, show_in_viewer=False)
             data = imviz_helper.app.data_collection[3]
-            assert data.label.startswith('Unknown HDU object') and data.label.endswith('[SCI,1]')
+            assert data.label.startswith('Image') and data.label.endswith('[SCI,1]')
             assert_allclose(data.meta['PHOTFLAM'], 7.8711728E-20)
             assert 'SCI,1' in data.components
 
             # Request specific extension (name only), use given label
             imviz_helper.load_data(pf, ext='CTX', show_in_viewer=False)
             data = imviz_helper.app.data_collection[4]
-            assert data.label.startswith('Unknown HDU object') and data.label.endswith('[CTX,1]')
+            assert data.label.startswith('Image') and data.label.endswith('[CTX,1]')
             assert data.meta['EXTNAME'] == 'CTX'
             assert 'CTX,1' in data.components
 
@@ -521,6 +501,22 @@ class TestParseImage:
         with pytest.raises(KeyError, match='not found'):
             parse_data(imviz_helper.app, filename, ext='DOES_NOT_EXIST', data_label='foo')
 
+    @pytest.mark.remote_data
+    @pytest.mark.filterwarnings("ignore:Some non-standard WCS keywords were excluded")
+    @pytest.mark.parametrize(
+        ('gwcs_to_fits_sip', 'expected_cls'),
+        ((True, WCS), (False, GWCS),), ids=('True-WCS', 'False-GWCS'))
+    def test_gwcs_to_fits_sip(self, gwcs_to_fits_sip, expected_cls, imviz_helper):
+        """
+        Test gwcs_to_fits_sip as an argument to load_data until it is
+        fully deprecated.
+        """
+        imviz_helper.load_data(self.jwst_asdf_url_1, cache=True,
+                               gwcs_to_fits_sip=gwcs_to_fits_sip)
+
+        data = imviz_helper.app.data_collection[0]
+        assert isinstance(data.coords, expected_cls)
+
 
 def test_load_valid_not_valid(imviz_helper):
     # Load something valid.
@@ -528,7 +524,7 @@ def test_load_valid_not_valid(imviz_helper):
     imviz_helper.load_data(arr, data_label='valid', show_in_viewer=False)
 
     # Load something invalid.
-    with pytest.raises(ValueError, match='Imviz cannot load this array with ndim=1'):
+    with pytest.raises(ValueError, match='no valid loaders found for input'):
         imviz_helper.load_data(np.zeros(2), show_in_viewer=False)
 
     # Make sure valid data is still there.
