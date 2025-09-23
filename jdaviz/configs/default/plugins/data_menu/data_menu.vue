@@ -190,20 +190,29 @@
                         {{ item.label }}
                       </span>
                     </v-list-item-content>
-                    <v-list-item-action>
-                      <j-tooltip
-                        :tooltipcontent="api_hints_enabled ? '' : item.is_sonfied ? 'Toggle sonification' : 'Toggle visibility'"
-                      >
-                        <plugin-switch
-                          :value="item.visible"
-                          @click="(value) => {set_layer_visibility({layer: item.label, value: value})}"
-                          @mouseover = "() => {hover_api_hint = 'dm.set_layer_visibility(\'' + item.label + '\', '+boolToString(item.visible)+')'}"
-                          @mouseleave = "() => {if (!lock_hover_api_hint) {hover_api_hint = ''}}"
-                          :api_hints_enabled="false"
-                          :use_icon="item.is_sonfiied ? 'speaker' : 'eye'"
-                        />
-                      </j-tooltip>
-                    </v-list-item-action>
+                      <v-list-item-action>
+                        <j-tooltip
+                          v-if="disabled_layers_due_to_pixel_link.includes(item.label)"
+                          tooltipcontent="Layer cannot be made visible when viewer is aligned by pixel coordinates."
+                        >
+                          <v-btn icon disabled>
+                            <v-icon>mdi-eye-off</v-icon>
+                          </v-btn>
+                        </j-tooltip>
+                        <j-tooltip
+                          v-else
+                          :tooltipcontent="api_hints_enabled ? '' : item.is_sonified ? 'Toggle sonification' :'Toggle visibility'"
+                          >
+                          <plugin-switch
+                            :value="item.visible"
+                            @click="(value) => {set_layer_visibility({layer: item.label, value: value})}"
+                            @mouseover = "() => {hover_api_hint = 'dm.set_layer_visibility(\'' + item.label + '\', '+boolToString(item.visible)+')'}"
+                            @mouseleave = "() => {if (!lock_hover_api_hint) {hover_api_hint = ''}}"
+                            :api_hints_enabled="false"
+                            :use_icon="item.is_sonified ? 'speaker' : 'eye'"
+                          />
+                        </j-tooltip>
+                      </v-list-item-action>
                   </v-list-item>
                 </draggable>
               </div>

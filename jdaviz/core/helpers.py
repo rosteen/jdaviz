@@ -213,9 +213,7 @@ class ConfigHelper(HubListener):
             kwargs['viewer'] = '*' if kwargs.pop('show_in_viewer') else []
 
         importer = resolver.importer
-        for k, v in kwargs.items():
-            if hasattr(importer, k) and v is not None:
-                setattr(importer, k, v)
+        importer._obj._apply_kwargs(kwargs)
         return importer()
 
     @property
@@ -610,8 +608,8 @@ class ConfigHelper(HubListener):
         data = self.app.data_collection[data_label]
 
         if not cls:
-            if hasattr(data, '_native_data_cls'):
-                cls = data._native_data_cls
+            if data.meta.get('_native_data_cls', None) is not None:
+                cls = data.meta['_native_data_cls']
             # TODO: once everything goes through loaders, can we remove everything below?
             elif 'Trace' in data.meta:
                 cls = None
