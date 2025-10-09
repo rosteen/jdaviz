@@ -120,7 +120,7 @@ class ImageImporter(BaseImporterToDataCollection):
 
     @property
     def is_valid(self):
-        if self.app.config not in ('deconfigged', 'imviz', 'mastviz'):
+        if self.app.config not in ('deconfigged', 'imviz', 'mastviz', 'cubeviz'):
             # NOTE: temporary during deconfig process
             return False
         # flat image, not a cube
@@ -170,6 +170,7 @@ class ImageImporter(BaseImporterToDataCollection):
         elif (self.data_label_as_prefix or
               (isinstance(self.input, NDData) and
                getattr(self.input, 'meta', {}).get('plugin', None) is None)):
+            print(f"Uh oh, something is wrong: has meta is {hasattr(self.input, 'meta')} and the value is {self.input.meta}")
             # will append with [DATA]/[UNCERTAINTY]/[MASK] later
             # TODO: allow user to select extensions and include in same logic as HDUList
             self.data_label_default = prefix

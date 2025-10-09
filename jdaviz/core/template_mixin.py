@@ -4714,7 +4714,7 @@ class AddResults(BasePluginComponent):
 
         if not hasattr(data_item, 'meta'):
             data_item.meta = {}
-        data_item.meta['Plugin'] = self.plugin._plugin_name
+        data_item.meta['plugin'] = self.plugin._plugin_name
         if self.app.config == 'mosviz':
             data_item.meta['mosviz_row'] = self.app.state.settings['mosviz_row']
 
@@ -4726,6 +4726,7 @@ class AddResults(BasePluginComponent):
             data_item.meta['_update_live_plugin_results']['_subscriptions'] = subscriptions
 
         if self.app.config in CONFIGS_WITH_LOADERS and format is not None:
+            print(f"format is: {format}")
             self.app._jdaviz_helper.load(data_item,
                                          loader='object', format=format,
                                          data_label=label, viewer=[])
