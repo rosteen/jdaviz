@@ -22,7 +22,7 @@
 
         <j-tooltip tipid="app-toolbar-settings">
           <v-btn icon @click="() => {if (state.drawer_content === 'settings') {state.drawer_content = ''} else {state.drawer_content = 'settings'}}" :class="{active : state.drawer_content === 'settings'}" :disabled="!state.tray_items[state.tray_items.map(ti => ti.label).indexOf('Plot Options')].is_relevant">
-            <v-icon medium style="padding-top: 2px">mdi-cog</v-icon>
+            <img :src="state.icons['cog']" width="24" class="invert-if-dark" style="opacity: 1.0; padding-top: 2px"/>
           </v-btn>
         </j-tooltip>
         <j-tooltip tipid="app-toolbar-info">
@@ -499,7 +499,7 @@ export default {
     this.outputCellHasHeight = this.$refs.mainapp.$el.offsetHeight > 0
 
     /* Workaround for Lab 4.5: cells outside the viewport get the style "contentVisibility: auto" which causes wrong
-     * size calculations of golden layout from which it doesn't recover.    
+     * size calculations of golden layout from which it doesn't recover.
      */
     const jpCell = this.$el.closest('.jp-Cell.jp-CodeCell');
     if (jpCell) {

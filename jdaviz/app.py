@@ -288,6 +288,8 @@ class ApplicationState(State):
         'nuel': read_icon(os.path.join(ICON_DIR, 'left-east.svg'), 'svg+xml'),
         'api': read_icon(os.path.join(ICON_DIR, 'api.svg'), 'svg+xml'),
         'api-lock': read_icon(os.path.join(ICON_DIR, 'api_lock.svg'), 'svg+xml'),
+        'cog': os.path.join(ICON_DIR, 'cog.svg'),
+        'tune-variant': os.path.join(ICON_DIR, 'tune-variant.svg')
     }, docstring="Custom application icons")
 
     viewer_icons = DictCallbackProperty({}, docstring="Indexed icons (numbers) for viewers across the app")  # noqa
