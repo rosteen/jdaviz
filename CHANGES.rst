@@ -29,6 +29,8 @@ New Features
 
 - Improve default marker styling options (size and color cycler) for scatter layers. [#4044]
 
+- Top level access to datasets API dictionary, deprecating top-level access to data_labels list. [#4024]
+
 Cubeviz
 ^^^^^^^
 
