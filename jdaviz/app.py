@@ -1953,7 +1953,7 @@ class Application(VuetifyTemplate, HubListener):
                     viewer.state.reference_data = data
 
             # Updated derived data if applicable
-            self._renamed_derived_data(old_label, new_label, 'data')
+            self._rename_derived_data(old_label, new_label, 'data')
 
         finally:
             # Reset the renaming flag after all callbacks have been processed
@@ -1961,14 +1961,14 @@ class Application(VuetifyTemplate, HubListener):
             # will skip resetting the selected value during the rename process
             self._renaming_data = False
 
-    def _renamed_derived_data(self, old_label, new_label, data_type):
+    def _rename_derived_data(self, old_label, new_label, data_type):
         for d in self.data_collection:
             data_renamed = False
             if data_type == 'subset':
                 # Extracted spectra are named, e.g., 'Data (Subset 1, sum)'
                 label_base = d.label.split('(')[-1].split(',')[0]
             else:
-                label_base = d.label.split(' (')[0].split('[')[0]
+                label_base = d.label.split('(')[0].split('[')[0].strip()
             # Extracted spectra are named, e.g., 'Data (Subset 1, sum)'
             if label_base == old_label:
                 old_data_label = d.label
@@ -2557,7 +2557,7 @@ class Application(VuetifyTemplate, HubListener):
             self._update_layer_icons(old_label, new_label)
 
             # Updated derived data if applicable
-            self._renamed_derived_data(old_label, new_label, 'subset')
+            self._rename_derived_data(old_label, new_label, 'subset')
 
         finally:
             self._renaming_subset = False
