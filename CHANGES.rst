@@ -125,6 +125,8 @@ Bug Fixes
 
 - Fix layer filtering logic for plot options to properly show/hide layers based on coordinate and link type. [#4046]
 
+- Fixed WCS layer being pushed to incorrect viewer types in deconfigged when changing between pixel and WCS linking. [#4049]
+
 Cubeviz
 ^^^^^^^
 
