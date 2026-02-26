@@ -34,6 +34,7 @@ New Features
 - Renaming data will now propagate the new label to derived data in the same way as renaming subsets. For example,
   renaming 'Cube' to 'CubeFlux' will rename 'Cube (Subset 1, sum)' to 'CubeFlux (Subset 1, sum)'. [#4025]
 
+- Table viewer tools to highlight selected, zoom-to-selected, and create subset from selected. [#3994]
 
 Cubeviz
 ^^^^^^^
