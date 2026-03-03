@@ -5,6 +5,7 @@ from astropy import units as u
 from pyvo.utils import vocabularies
 from pyvo import registry
 from pyvo.dal.exceptions import DALFormatError, DALQueryError
+from pyvo.utils.vocabularies import VocabularyError
 from requests.exceptions import ConnectionError as RequestConnectionError
 from traitlets import Bool, Unicode, Any, List, Float, observe
 
@@ -85,9 +86,12 @@ class VoPlugin(PluginTemplateMixin, AddResultsMixin, TableMixin):
         self.waveband = SelectPluginComponent(
             self, items="waveband_items", selected="waveband_selected"
         )
-        self.waveband.choices = (
-            w.lower() for w in vocabularies.get_vocabulary("messenger")["terms"]
-        )
+        try:
+            self.waveband.choices = (
+                w.lower() for w in vocabularies.get_vocabulary("messenger")["terms"]
+            )
+        except VocabularyError:
+            self.waveband.choices = []
         self.waveband_selected = ""
 
         self._full_registry_results = None
