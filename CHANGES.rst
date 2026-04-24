@@ -34,6 +34,9 @@ Bug Fixes
   during iteration error that occurs in many scenarios (linking, batch loading data,
   etc.). [#4150]
 
+- Multiply values from spectrum-at-spaxel tool by PIXAR_SR when available to match
+  units of other extracted fluxes. [#4156]
+
 
 Mosviz
 ^^^^^^
