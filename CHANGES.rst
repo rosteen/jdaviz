@@ -95,8 +95,10 @@ New Features
 
 - Fix table selection color in dark mode, rename "Remove from app" to "Delete from app", and allow line profile to use upper or lower case "L". [#4348]
 
-- Updated documentation for the application and caching, updated the jdaviz logo, 
+- Updated documentation for the application and caching, updated the jdaviz logo,
   and improved the .dmg installation process [#4337]
+
+- Improve UI appearance for URL loader. [#4354]
 
 Mosviz
 ^^^^^^
@@ -148,6 +150,8 @@ Bug Fixes
 ---------
 
 - fix case where file drop loader would not show importer options. [#4303]
+
+- fix URL loader not showing in UI. [#4361]
 
 - Fix image importer support for Roman L3 mosaic files. [#4309]
 
